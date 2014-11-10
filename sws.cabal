@@ -57,7 +57,7 @@ executable sws
   -- other-extensions:    
   
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.7 && <4.8, warp-tls, wai, wai-middleware-static, wai-extra
+  build-depends:       base >=4.7 && <4.8, bytestring, http-types, warp, warp-tls, wai, wai-middleware-static, wai-extra
   
   -- Directories containing source files.
   -- hs-source-dirs:      
