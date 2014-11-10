@@ -16,7 +16,11 @@ version:             0.1.0.0
 synopsis:            A simple web server for serving directories, similar to weborf.
 
 -- A longer description of the package.
--- description:         
+description:         
+    The main drivers for this application were Windows (and Linux) support and
+    security, and to a lesser extent performance.  Security is improved over
+    weborf by using Haskell, supporting TLS, and explicitly NOT supporting CGIs
+    of any kind.
 
 -- The license under which the package is released.
 license:             BSD3
@@ -32,7 +36,7 @@ author:              Derek Elkins
 maintainer:          derek.a.elkins@gmail.com
 
 -- A copyright notice.
--- copyright:           
+copyright:           Copyright (c) 2014 Derek Elkins
 
 category:            Web
 
@@ -57,7 +61,7 @@ executable sws
   -- other-extensions:    
   
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.7 && <4.8, bytestring, http-types, warp, warp-tls, wai, wai-middleware-static, wai-extra
+  build-depends:       base >=4.7 && <4.8, directory, filepath, bytestring, http-types, warp, warp-tls, wai, wai-middleware-static, wai-extra
   
   -- Directories containing source files.
   -- hs-source-dirs:      
