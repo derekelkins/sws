@@ -59,7 +59,7 @@ defOptions = Options {
     optHTTPS = False,
     optCertificate = "",
     optKeyFile = "",
-    optAllowHTTP = False }
+    optAllowHTTP = False } -- TODO: AllowHTTP doesn't work.  A bug in warp-tls?
 
 options :: [OptDescr (Options -> Options)]
 options = [
@@ -88,7 +88,7 @@ options = [
     Option "" ["key-file"] (OptArg (\f opt -> opt { optKeyFile = fromMaybe "" f }) "FILE")
         "Require the given username.  It's recommended to use this with HTTPS.",
     Option "" ["allow-http"] (NoArg (\opt -> opt { optAllowHTTP = True })) 
-        "Allow HTTP access when HTTPS is enabled.",
+        "Allow HTTP access when HTTPS is enabled. (Not working.)",
     Option "" ["disallow-http"] (NoArg (\opt -> opt { optAllowHTTP = False })) 
         "Disallow HTTP access when HTTPS is enabled. (Default)"
  ]
@@ -133,7 +133,7 @@ serve opts dir =
   where runner | optHTTPS opts = Warp.runTLS tlsSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
                | otherwise = Warp.run (optPort opts)
             where tlsSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
-                    Warp.onInsecure = if optAllowHTTP opts then Warp.AllowInsecure else Warp.DenyInsecure LBS.empty } 
+                    Warp.onInsecure = if optAllowHTTP opts then Warp.AllowInsecure else Warp.DenyInsecure (fromString "Use HTTPS") } 
 
 main = do
     args <- getArgs
