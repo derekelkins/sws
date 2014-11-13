@@ -90,9 +90,9 @@ options = [
     Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True })) 
         "Enable HTTPS.", 
     Option "" ["certificate"] (OptArg (\f opt -> opt { optCertificate = fromMaybe "" f }) "FILE")
-        "Require the given username.  It's recommended to use this with HTTPS.",
+        "The path to the server certificate.  Required for HTTPS.",
     Option "" ["key-file"] (OptArg (\f opt -> opt { optKeyFile = fromMaybe "" f }) "FILE")
-        "Require the given username.  It's recommended to use this with HTTPS.",
+        "The path to the private key for the certificate.  Required for HTTPS.",
     Option "" ["allow-http"] (NoArg (\opt -> opt { optAllowHTTP = True })) 
         "Allow HTTP access when HTTPS is enabled. (Not working.)",
     Option "" ["disallow-http"] (NoArg (\opt -> opt { optAllowHTTP = False })) 
