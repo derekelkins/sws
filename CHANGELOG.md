@@ -4,11 +4,16 @@ All notable changes to this project will be documented in this file.
 ## 0.3.0.0 - Unreleased
 ### Added
 - CHANGELOG.md and README.md
-- Support for generating throw-away TLS certificates, possibly changing the default to HTTPS.
+- Support for generating throw-away TLS certificates.
+- Support for generating password for Basic Authentication.
+- Support for adding custom headers to all responses.
 
 ### Changed
-- I will probably be removing the \-\-allow\-http option as it doesn't appear to work anyway,
-and it's not really desirable.
+- Change defaults to use HTTPS and Basic Authentication.
+- Requires a currently non-existent version of x509 to generate valid certificates.  (Pull request outstanding.)
+
+### Removed
+- \-\-allow\-http is removed.  It did not appear to work anyway.
 
 ## 0.2.0.0 - 2014-12-06
 ### Added
