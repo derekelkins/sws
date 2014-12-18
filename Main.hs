@@ -7,6 +7,7 @@ import qualified Data.ByteString as BS -- bytestring
 import qualified Data.ByteString.Char8 as CBS -- bytestring
 import qualified Data.ByteString.Lazy as LBS -- bytestring
 import Data.Foldable ( forM_ ) -- base
+import Data.Int ( Int64 ) -- base
 import Data.List ( sort ) -- base
 import Data.Maybe ( fromMaybe, maybe ) -- base
 import Data.Monoid ( (<>) ) -- base
@@ -28,11 +29,62 @@ import Network.Wai.Middleware.RequestLogger ( logStdout ) -- wai-extra
 import Network.Wai.Middleware.Static ( staticPolicy, addBase, isNotAbsolute, noDots, Policy, tryPolicy ) -- wai-middleware-static
 import Network.Wai.Parse ( tempFileBackEnd, parseRequestBody, fileName, fileContent ) -- wai-extra
 
--- Maybe future things: virtual hosts, caching, PUT/POST/DELETE support, dropping permissions, client certificates
--- Not future things: CGI etc of any sort
+-- For certificate generation.
+import Crypto.PubKey.RSA ( generate  ) -- crypto-pubkey
+import Crypto.PubKey.RSA.PKCS15 ( sign ) -- crypto-pubkey
+import Crypto.PubKey.HashDescr ( hashDescrSHA256 ) -- crypto-pubkey
+import Crypto.Random ( EntropyPool, createEntropyPool, cprgCreate, cprgGenerate, SystemRNG ) -- crypto-random
+import Data.ASN1.OID ( getObjectID ) -- asn1-types
+import Data.ASN1.Types ( toASN1 ) -- asn1-types
+import Data.ASN1.BinaryEncoding ( DER(DER) ) -- asn1-encoding
+import Data.ASN1.Encoding ( encodeASN1' ) -- asn1-encoding
+import qualified Data.PEM as PEM -- pem
+import qualified Data.X509 as X509 -- x509
+import qualified Data.Hourglass as HG -- hourglass
+import qualified System.Hourglass as HG -- hourglass
 
+-- Future things: case insensitive matching, optionally add CORS headers
+-- Maybe future things: virtual hosts, caching, DELETE support, dropping permissions, client certificates
+-- Not future things: CGI etc of any sort, "extensibility"
+--
 vERSION :: String
-vERSION = "0.2.0.0"
+vERSION = "0.3.0.0"
+
+rsaPublicExponent :: Integer
+rsaPublicExponent = 65537
+
+rsaSizeInBytes :: Int
+rsaSizeInBytes = 256 -- Corresponds to 2048 bit encryption
+
+certExpiryInDays :: Int64
+certExpiryInDays = 30
+
+generateCert :: Options -> HG.DateTime -> EntropyPool -> (Warp.TLSSettings, SystemRNG)
+generateCert opts now ep = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM.pemWriteBS pemKey)) {
+                                Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }, g')
+    where later = HG.timeAdd now (HG.Hours (24*certExpiryInDays))
+          (bs, g) = cprgGenerate 8 (cprgCreate ep) -- generate 8 random bytes for the serial number
+          ((pk, sk), g') = generate g rsaSizeInBytes rsaPublicExponent
+          serialNum = BS.foldl' (\a w -> a*256 + fromIntegral w) 0 bs
+          cn = getObjectID X509.DnCommonName
+          o = getObjectID X509.DnOrganization
+          dn = X509.DistinguishedName [(cn, fromString (optHost opts)), (o, fromString "sws generated")]
+          sigAlg = X509.SignatureALG X509.HashSHA256 X509.PubKeyALG_RSA
+          cert = X509.Certificate {
+                  X509.certVersion = 0, -- 0 means v1 ...
+                  X509.certSerial = serialNum,
+                  X509.certSignatureAlg = sigAlg,
+                  X509.certIssuerDN = dn,
+                  X509.certValidity = (HG.timeAdd now (HG.Hours (-24)), later), 
+                  X509.certSubjectDN = dn,
+                  X509.certPubKey = X509.PubKeyRSA pk,
+                  X509.certExtensions = X509.Extensions Nothing
+              }
+          signFunc xs = (either (error . show) id (sign Nothing hashDescrSHA256 sk xs), sigAlg, ())
+          certBytes = X509.encodeSignedObject $ fst $ X509.objectToSignedExact signFunc cert
+          keyBytes = encodeASN1' DER (toASN1 sk [])
+          pemCert = PEM.PEM (fromString "CERTIFICATE") [] certBytes  -- This is a mite silly.  Wrap in PEM just to immediately unwrap...
+          pemKey = PEM.PEM (fromString "RSA PRIVATE KEY") [] keyBytes
 
 data Options = Options {
     optPort :: Int,
@@ -53,9 +105,9 @@ data Options = Options {
 
     -- HTTPS options
     optHTTPS :: Bool,
+    optHost :: String,
     optCertificate :: FilePath,
     optKeyFile :: FilePath,
-    optAllowHTTP :: Bool,
     optAllowUploads :: Bool }
 
 defOptions :: Options
@@ -69,10 +121,10 @@ defOptions = Options {
     optRealm = "",
     optUserName = BS.empty,
     optPassword = BS.empty,
-    optHTTPS = False,
+    optHTTPS = False, -- TODO: Add option for the URL the certificate should be made for.
+    optHost = "localhost", 
     optCertificate = "",
     optKeyFile = "",
-    optAllowHTTP = False,  -- TODO: AllowHTTP doesn't work.  A bug in warp-tls?
     optAllowUploads = False }
 
 options :: [OptDescr (Options -> Options)]
@@ -99,14 +151,12 @@ options = [
         "Require the given username.  It's recommended to use this with HTTPS.",
     Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True })) 
         "Enable HTTPS.", 
+    Option "H" ["host"] (OptArg (\host opt -> opt { optHost = fromMaybe (optHost defOptions) host }) "HOST") 
+        ("Host name to use for generated certificate. (Default: " ++ optHost defOptions ++ ")"),
     Option "" ["certificate"] (OptArg (\f opt -> opt { optCertificate = fromMaybe "" f }) "FILE")
         "The path to the server certificate.  Required for HTTPS.",
     Option "" ["key-file"] (OptArg (\f opt -> opt { optKeyFile = fromMaybe "" f }) "FILE")
         "The path to the private key for the certificate.  Required for HTTPS.",
-    Option "" ["allow-http"] (NoArg (\opt -> opt { optAllowHTTP = True })) 
-        "Allow HTTP access when HTTPS is enabled. (Not working.)",
-    Option "" ["disallow-http"] (NoArg (\opt -> opt { optAllowHTTP = False })) 
-        "Disallow HTTP access when HTTPS is enabled. (Default)",
     Option "w" ["allow-uploads", "writable"] (NoArg (\opt -> opt { optAllowUploads = True }))
         "Allow files to be uploaded."
  ]
@@ -115,7 +165,7 @@ validateOptions :: Options -> Maybe String
 validateOptions opts 
     | BS.null (optPassword opts) && not (BS.null $ optUserName opts) = Just "Password is required to enable Basic Authentication."
     | not (BS.null $ optPassword opts) && BS.null (optUserName opts) = Just "Username is required to enable Basic Authentication."
-    | optHTTPS opts && (null (optCertificate opts) || null (optKeyFile opts)) = Just "Certificate and key are required to enable HTTPS"
+    -- | optHTTPS opts && (null (optCertificate opts) || null (optKeyFile opts)) = Just "Certificate and key are required to enable HTTPS"
     | otherwise = Nothing
 
 usageHeader :: String
@@ -142,7 +192,7 @@ update opts policy app req k = do
                         let src = fileContent f
                         when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
                         copyFile src tgt
-    app req k
+    app req k -- We execute the next Application regardless so that we return a listing after the POST completes.
 
 -- TODO: Make this less fugly.
 directoryListing :: Options -> FilePath -> Middleware -- TODO: Handle exceptions.  Note, this isn't critical.  It will carry on.
@@ -184,10 +234,18 @@ serve opts dir =
                 $ staticPolicy policy 
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)
                 $ app404
-  where runner | optHTTPS opts = Warp.runTLS tlsSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
+  where runner | optHTTPS opts && certProvided 
+                    = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
+               | optHTTPS opts = \app -> do
+                    now <- HG.dateCurrent
+                    ep <- createEntropyPool
+                    let (tlsSettings, _) = generateCert opts now ep
+                    Warp.runTLS tlsSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
                | otherwise = Warp.run (optPort opts)
-            where tlsSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
-                    Warp.onInsecure = if optAllowHTTP opts then Warp.AllowInsecure else Warp.DenyInsecure (fromString "Use HTTPS") } 
+            where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
+                    Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") } 
+                  certProvided = not (null (optCertificate opts)) && not (null (optKeyFile opts))
+
         policy = basePolicy <> addBase dir
 
 main :: IO ()
