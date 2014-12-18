@@ -6,6 +6,7 @@ import Control.Monad.Trans.Resource ( withInternalState, runResourceT ) -- resou
 import qualified Data.ByteString as BS -- bytestring
 import qualified Data.ByteString.Char8 as CBS -- bytestring
 import qualified Data.ByteString.Lazy as LBS -- bytestring
+import Data.Bits ( (.&.), unsafeShiftR ) -- base
 import Data.Foldable ( forM_ ) -- base
 import Data.Int ( Int64 ) -- base
 import Data.List ( sort ) -- base
@@ -59,12 +60,12 @@ rsaSizeInBytes = 256 -- Corresponds to 2048 bit encryption
 certExpiryInDays :: Int64
 certExpiryInDays = 30
 
-generateCert :: Options -> HG.DateTime -> EntropyPool -> (Warp.TLSSettings, SystemRNG)
-generateCert opts now ep = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM.pemWriteBS pemKey)) {
-                                Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }, g')
+generateCert :: Options -> HG.DateTime -> SystemRNG -> (Warp.TLSSettings, SystemRNG)
+generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM.pemWriteBS pemKey)) {
+                                Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }, g'')
     where later = HG.timeAdd now (HG.Hours (24*certExpiryInDays))
-          (bs, g) = cprgGenerate 8 (cprgCreate ep) -- generate 8 random bytes for the serial number
-          ((pk, sk), g') = generate g rsaSizeInBytes rsaPublicExponent
+          (bs, g') = cprgGenerate 8 g -- generate 8 random bytes for the serial number
+          ((pk, sk), g'') = generate g' rsaSizeInBytes rsaPublicExponent
           serialNum = BS.foldl' (\a w -> a*256 + fromIntegral w) 0 bs
           cn = getObjectID X509.DnCommonName
           o = getObjectID X509.DnOrganization
@@ -99,6 +100,7 @@ data Options = Options {
     optLocalOnly :: Bool,
 
     -- Basic authentication options
+    optAuthentication :: Bool,
     optRealm :: String,
     optUserName :: BS.ByteString, -- some default could be chosen
     optPassword :: BS.ByteString, -- maybe we could generate and display one rather than requiring this
@@ -118,10 +120,11 @@ defOptions = Options {
     optCompress = True,
     optDirectoryListings = True,
     optLocalOnly = False,
+    optAuthentication = True,
     optRealm = "",
-    optUserName = BS.empty,
+    optUserName = fromString "sws",
     optPassword = BS.empty,
-    optHTTPS = False, -- TODO: Add option for the URL the certificate should be made for.
+    optHTTPS = True,
     optHost = "localhost", 
     optCertificate = "",
     optKeyFile = "",
@@ -143,30 +146,32 @@ options = [
         "Disable compression.",
     Option "" ["no-listings"] (NoArg (\opt -> opt { optDirectoryListings = False })) 
         "Don't list directory contents.",
+    Option "" ["no-auth"] (NoArg (\opt -> opt { optAuthentication = False })) 
+        "Don't require a password.",
     Option "r" ["realm"] (OptArg (\r opt -> opt { optRealm = fromMaybe "" r }) "REALM") 
         "Set the authentication realm. It's recommended to use this with HTTPS. (Default: \"\")",
-    Option "" ["password"] (OptArg (\pw opt -> opt { optPassword = fromString $ fromMaybe "" pw }) "PASSWORD") 
-        "Require the given password.  It's recommended to use this with HTTPS.",
+    Option "" ["password"] (OptArg (\pw opt -> opt { optPassword = maybe (optPassword defOptions) fromString pw }) "PASSWORD") 
+        "Require the given password.  It's recommended to use this with HTTPS. (Default: generated)",
     Option "u" ["username"] (OptArg (\u opt -> opt { optUserName = fromString $ fromMaybe "" u }) "USERNAME") 
-        "Require the given username.  It's recommended to use this with HTTPS.",
+        ("Require the given username.  It's recommended to use this with HTTPS. (Default: " ++ show (optUserName defOptions)  ++ ")"),
     Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True })) 
-        "Enable HTTPS.", 
+        "Enable HTTPS. (Default)", 
+    Option "" ["no-https"] (NoArg (\opt -> opt { optHTTPS = False })) 
+        "Disable HTTPS.", 
     Option "H" ["host"] (OptArg (\host opt -> opt { optHost = fromMaybe (optHost defOptions) host }) "HOST") 
-        ("Host name to use for generated certificate. (Default: " ++ optHost defOptions ++ ")"),
+        ("Host name to use for generated certificate. (Default: " ++ show (optHost defOptions) ++ ")"),
     Option "" ["certificate"] (OptArg (\f opt -> opt { optCertificate = fromMaybe "" f }) "FILE")
-        "The path to the server certificate.  Required for HTTPS.",
+        "The path to the server certificate.",
     Option "" ["key-file"] (OptArg (\f opt -> opt { optKeyFile = fromMaybe "" f }) "FILE")
-        "The path to the private key for the certificate.  Required for HTTPS.",
+        "The path to the private key for the certificate.",
     Option "w" ["allow-uploads", "writable"] (NoArg (\opt -> opt { optAllowUploads = True }))
         "Allow files to be uploaded."
  ]
 
+-- TODO: KeyFile w/o Certificate and vice-versa, KeyFile/Certificate without HTTPS,
+--       --no-auth and any of user/password/realm
 validateOptions :: Options -> Maybe String
-validateOptions opts 
-    | BS.null (optPassword opts) && not (BS.null $ optUserName opts) = Just "Password is required to enable Basic Authentication."
-    | not (BS.null $ optPassword opts) && BS.null (optUserName opts) = Just "Username is required to enable Basic Authentication."
-    -- | optHTTPS opts && (null (optCertificate opts) || null (optKeyFile opts)) = Just "Certificate and key are required to enable HTTPS"
-    | otherwise = Nothing
+validateOptions opts = Nothing
 
 usageHeader :: String
 usageHeader = "Usage: sws [OPTIONS...] [DIRECTORY]\nVersion: " ++ vERSION
@@ -216,34 +221,46 @@ directoryListing opts baseDir app req k = do
 app404 :: Application
 app404 req k = k (responseLBS status404 [] (fromString "File Not Found"))
 
+-- A "base 32" encode so we don't have differing case in the password.
+base32Encode :: BS.ByteString -> BS.ByteString
+base32Encode = let table = fromString "0123456789abcdefghijklmnopqrstuv"
+                   go i | i == 0 = Nothing
+                        | otherwise = Just (BS.index table (fromIntegral (i .&. 0x1F)), i `unsafeShiftR` 5)
+    in \bs -> fst $ BS.unfoldrN 13 go $ BS.foldl' (\a w -> a*256 + fromIntegral w) (0 :: Integer) bs 
+
 serve :: Options -> String -> IO ()
 serve (Options { optHelp = True }) _ = putStrLn $ usageInfo usageHeader options
-serve opts dir =
+serve opts dir = do
+    now <- HG.dateCurrent
+    g <- fmap cprgCreate createEntropyPool
+    let (prePW, g') = cprgGenerate 8 g -- generate 8 random bytes for the password if needed
+        pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
     case validateOptions opts of
         Just err -> putStrLn err
         Nothing -> do
+            when (optAuthentication opts && not (BS.null (optUserName opts))) $
+                putStrLn $ "Username is: " ++ CBS.unpack (optUserName opts)
+            when (optAuthentication opts && BS.null (optPassword opts)) $
+                putStrLn $ "Generated password is: " ++ CBS.unpack pw
             putStrLn $ "Listening on port " ++ show (optPort opts)
-            runner
+            runner now g'
                 $ enableIf (optVerbose opts) logStdout
                 $ enableIf (optLocalOnly opts) (local (responseLBS status403 [] LBS.empty))
-                $ enableIf (not $ BS.null $ optPassword opts) 
-                    (basicAuth (\u p -> return $ optUserName opts == u && optPassword opts == p) 
+                $ enableIf (optAuthentication opts) 
+                    (basicAuth (\u p -> return $ optUserName opts == u && pw == p) 
                                (fromString $ optRealm opts))
                 $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
                 $ enableIf (optAllowUploads opts) (update opts policy)
                 $ staticPolicy policy 
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)
                 $ app404
-  where runner | optHTTPS opts && certProvided 
-                    = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
-               | optHTTPS opts = \app -> do
-                    now <- HG.dateCurrent
-                    ep <- createEntropyPool
-                    let (tlsSettings, _) = generateCert opts now ep
-                    Warp.runTLS tlsSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
-               | otherwise = Warp.run (optPort opts)
+  where runner now g | optHTTPS opts && certProvided 
+                        = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
+                     | optHTTPS opts = Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
+                     | otherwise = Warp.run (optPort opts)
             where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
                     Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") } 
+                  (tlsMemSettings, _) = generateCert opts now g
                   certProvided = not (null (optCertificate opts)) && not (null (optKeyFile opts))
 
         policy = basePolicy <> addBase dir
