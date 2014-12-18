@@ -10,7 +10,6 @@ import Data.Bits ( (.&.), unsafeShiftR ) -- base
 import Data.Foldable ( forM_ ) -- base
 import Data.Int ( Int64 ) -- base
 import Data.List ( sort ) -- base
-import Data.Maybe ( fromMaybe, maybe ) -- base
 import Data.Monoid ( (<>) ) -- base
 import Data.String ( fromString ) -- base
 import System.Console.GetOpt ( getOpt, usageInfo, OptDescr(..), ArgDescr(..), ArgOrder(..) ) -- base
@@ -23,6 +22,7 @@ import Network.HTTP.Types.Method ( methodPost ) -- http-types
 import Network.Wai ( Application, Middleware, requestMethod, rawPathInfo, responseLBS ) -- wai
 import qualified Network.Wai.Handler.Warp as Warp -- warp
 import qualified Network.Wai.Handler.WarpTLS as Warp -- warp-tls
+import Network.Wai.Middleware.AddHeaders ( addHeaders ) -- wai-extra
 import Network.Wai.Middleware.Gzip ( gzip, gzipFiles, def, GzipFiles(GzipIgnore, GzipCompress) ) -- wai-extra
 import Network.Wai.Middleware.HttpAuth ( basicAuth, AuthSettings ) -- wai-extra
 import Network.Wai.Middleware.Local ( local ) -- wai-extra
@@ -99,6 +99,8 @@ data Options = Options {
 
     optLocalOnly :: Bool,
 
+    optHeaders :: [String], 
+
     -- Basic authentication options
     optAuthentication :: Bool,
     optRealm :: String,
@@ -120,6 +122,7 @@ defOptions = Options {
     optCompress = True,
     optDirectoryListings = True,
     optLocalOnly = False,
+    optHeaders = [],
     optAuthentication = True,
     optRealm = "",
     optUserName = fromString "sws",
@@ -132,7 +135,7 @@ defOptions = Options {
 
 options :: [OptDescr (Options -> Options)]
 options = [
-    Option "p" ["port"] (OptArg (\p opt -> opt { optPort = maybe (optPort defOptions) read p }) "NUM") 
+    Option "p" ["port"] (ReqArg (\p opt -> opt { optPort = read p }) "NUM") 
         ("Port to listen on. (Default: " ++ (show $ optPort defOptions) ++ ")"),
     Option "h?" ["help", "version"] (NoArg (\opt -> opt { optHelp = True })) 
         "Print usage.",
@@ -140,6 +143,8 @@ options = [
         "Print diagnostic output.",
     Option "l" ["local"] (NoArg (\opt -> opt { optLocalOnly = True })) 
         "Only accept connections from localhost.",
+    Option "X" [] (ReqArg (\h opt -> opt { optHeaders = h : optHeaders opt }) "HEADER")
+        "Add HEADER to all server responses.",
     Option "z" ["gzip", "compress"] (NoArg (\opt -> opt { optCompress = True })) 
         "Enable compression. (Default)",
     Option "" ["no-compress"] (NoArg (\opt -> opt { optCompress = False })) 
@@ -148,28 +153,29 @@ options = [
         "Don't list directory contents.",
     Option "" ["no-auth"] (NoArg (\opt -> opt { optAuthentication = False })) 
         "Don't require a password.",
-    Option "r" ["realm"] (OptArg (\r opt -> opt { optRealm = fromMaybe "" r }) "REALM") 
+    Option "r" ["realm"] (ReqArg (\r opt -> opt { optRealm = r }) "REALM") 
         "Set the authentication realm. It's recommended to use this with HTTPS. (Default: \"\")",
-    Option "" ["password"] (OptArg (\pw opt -> opt { optPassword = maybe (optPassword defOptions) fromString pw }) "PASSWORD") 
+    Option "" ["password"] (ReqArg (\pw opt -> opt { optPassword = fromString pw }) "PASSWORD") 
         "Require the given password.  It's recommended to use this with HTTPS. (Default: generated)",
-    Option "u" ["username"] (OptArg (\u opt -> opt { optUserName = fromString $ fromMaybe "" u }) "USERNAME") 
+    Option "u" ["username"] (ReqArg (\u opt -> opt { optUserName = fromString u }) "USERNAME") 
         ("Require the given username.  It's recommended to use this with HTTPS. (Default: " ++ show (optUserName defOptions)  ++ ")"),
     Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True })) 
         "Enable HTTPS. (Default)", 
     Option "" ["no-https"] (NoArg (\opt -> opt { optHTTPS = False })) 
         "Disable HTTPS.", 
-    Option "H" ["host"] (OptArg (\host opt -> opt { optHost = fromMaybe (optHost defOptions) host }) "HOST") 
+    Option "H" ["host"] (ReqArg (\host opt -> opt { optHost = host }) "HOST") 
         ("Host name to use for generated certificate. (Default: " ++ show (optHost defOptions) ++ ")"),
-    Option "" ["certificate"] (OptArg (\f opt -> opt { optCertificate = fromMaybe "" f }) "FILE")
+    Option "" ["certificate"] (ReqArg (\f opt -> opt { optCertificate = f }) "FILE")
         "The path to the server certificate.",
-    Option "" ["key-file"] (OptArg (\f opt -> opt { optKeyFile = fromMaybe "" f }) "FILE")
+    Option "" ["key-file"] (ReqArg (\f opt -> opt { optKeyFile = f }) "FILE")
         "The path to the private key for the certificate.",
     Option "w" ["allow-uploads", "writable"] (NoArg (\opt -> opt { optAllowUploads = True }))
         "Allow files to be uploaded."
  ]
 
 -- TODO: KeyFile w/o Certificate and vice-versa, KeyFile/Certificate without HTTPS,
---       --no-auth and any of user/password/realm
+--       --no-auth and any of user/password/realm, header lacks ": ",
+--       and whatever others make sense.
 validateOptions :: Options -> Maybe String
 validateOptions opts = Nothing
 
@@ -235,6 +241,7 @@ serve opts dir = do
     g <- fmap cprgCreate createEntropyPool
     let (prePW, g') = cprgGenerate 8 g -- generate 8 random bytes for the password if needed
         pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
+        headers = map ((\(x,y) -> (x, BS.drop 2 y)) . BS.breakSubstring (fromString ": ") . fromString) (optHeaders opts)
     case validateOptions opts of
         Just err -> putStrLn err
         Nothing -> do
@@ -250,6 +257,7 @@ serve opts dir = do
                     (basicAuth (\u p -> return $ optUserName opts == u && pw == p) 
                                (fromString $ optRealm opts))
                 $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
+                $ enableIf (not (null headers)) (addHeaders headers)
                 $ enableIf (optAllowUploads opts) (update opts policy)
                 $ staticPolicy policy 
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)

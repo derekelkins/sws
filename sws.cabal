@@ -81,9 +81,9 @@ executable sws
     transformers(==0.4.*),
     warp(==3.0.*), 
     warp-tls(==3.0.*), 
-    wai(==3.0.*), 
+    wai(==3.0.*),
     wai-middleware-static(==0.6.*), 
-    wai-extra(==3.0.*),
+    wai-extra >=3.0.3 && <3.1,
     x509(==1.5.*)
   
   -- Directories containing source files.
