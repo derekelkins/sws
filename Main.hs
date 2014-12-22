@@ -125,7 +125,7 @@ defOptions = Options {
     optHeaders = [],
     optAuthentication = True,
     optRealm = "",
-    optUserName = fromString "sws",
+    optUserName = fromString "guest",
     optPassword = BS.empty,
     optHTTPS = True,
     optHost = "localhost", 
@@ -154,11 +154,11 @@ options = [
     Option "" ["no-auth"] (NoArg (\opt -> opt { optAuthentication = False })) 
         "Don't require a password.",
     Option "r" ["realm"] (ReqArg (\r opt -> opt { optRealm = r }) "REALM") 
-        "Set the authentication realm. It's recommended to use this with HTTPS. (Default: \"\")",
+        "Set the authentication realm. (Default: \"\")",
     Option "" ["password"] (ReqArg (\pw opt -> opt { optPassword = fromString pw }) "PASSWORD") 
-        "Require the given password.  It's recommended to use this with HTTPS. (Default: generated)",
+        "Require the given password. (Default: generated)",
     Option "u" ["username"] (ReqArg (\u opt -> opt { optUserName = fromString u }) "USERNAME") 
-        ("Require the given username.  It's recommended to use this with HTTPS. (Default: " ++ show (optUserName defOptions)  ++ ")"),
+        ("Require the given username. (Default: " ++ show (optUserName defOptions)  ++ ")"),
     Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True })) 
         "Enable HTTPS. (Default)", 
     Option "" ["no-https"] (NoArg (\opt -> opt { optHTTPS = False })) 
@@ -247,8 +247,9 @@ serve opts dir = do
         Nothing -> do
             when (optAuthentication opts && not (BS.null (optUserName opts))) $
                 putStrLn $ "Username is: " ++ CBS.unpack (optUserName opts)
-            when (optAuthentication opts && BS.null (optPassword opts)) $
+            when (optAuthentication opts && BS.null (optPassword opts)) $ do
                 putStrLn $ "Generated password is: " ++ CBS.unpack pw
+                putStrLn "Use --no-auth if password protection is not desired."
             putStrLn $ "Listening on port " ++ show (optPort opts)
             runner now g'
                 $ enableIf (optVerbose opts) logStdout
@@ -264,7 +265,10 @@ serve opts dir = do
                 $ app404
   where runner now g | optHTTPS opts && certProvided 
                         = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
-                     | optHTTPS opts = Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
+                     | optHTTPS opts = \app -> do
+                        putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
+                        putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
+                        Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
                      | otherwise = Warp.run (optPort opts)
             where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
                     Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") } 
