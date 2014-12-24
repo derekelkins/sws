@@ -231,6 +231,8 @@ options = [
         "Only accept connections from localhost.",
     Option "" ["no-stun"] (NoArg (\opt -> opt { optGetIP = False })) 
         "Don't attempt to get the public IP via STUN.",
+    Option "d" ["dev-mode"] (NoArg (\opt -> opt { optGetIP = False, optLocalOnly = True, optAuthentication = False, optHTTPS = False })) 
+        "Equivalent to --local --no-auth --no-https --no-stun.",
     Option "X" [] (ReqArg (\h opt -> opt { optHeaders = h : optHeaders opt }) "HEADER")
         "Add HEADER to all server responses.",
     Option "z" ["gzip", "compress"] (NoArg (\opt -> opt { optCompress = True })) 
