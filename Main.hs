@@ -309,22 +309,27 @@ serve opts dir = do
         Just err -> putStrLn err
         Nothing -> do
             putStr "Private Address: " 
-            hn <- getHostName
-            addrs <- fmap (take 1 . hostAddresses) (getHostByName hn) -- TODO: maybe have an option to list all addresses
-            forM_ addrs $ \ip -> putStrLn (prettyAddress (optHTTPS opts) (explodeHostAddress ip) (optPort opts))
+            if optLocalOnly opts then do
+                putStrLn (prettyAddress (optHTTPS opts) [127,0,0,1] (optPort opts))
+              else do
+                hn <- getHostName
+                addrs <- fmap (take 1 . hostAddresses) (getHostByName hn) -- TODO: maybe have an option to list all addresses
+                forM_ addrs $ \ip -> putStrLn (prettyAddress (optHTTPS opts) (explodeHostAddress ip) (optPort opts))
 
-            when (optGetIP opts) $ do
+            when (optGetIP opts && not (optLocalOnly opts)) $ do
                 mip <- doStun 
                 case mip of
                     Nothing -> putStrLn "Finding public IP failed." 
                     Just ip -> do 
                         putStr "Public Address: " 
                         putStrLn (prettyAddress (optHTTPS opts) ip (optPort opts))
+
             when (optAuthentication opts && not (BS.null (optUserName opts))) $
                 putStrLn $ "Username is: " ++ CBS.unpack (optUserName opts)
             when (optAuthentication opts && BS.null (optPassword opts)) $ do
                 putStrLn $ "Generated password is: " ++ CBS.unpack pw
                 putStrLn "Use --no-auth if password protection is not desired."
+
             runner now g'
                 $ enableIf (optVerbose opts) logStdout
                 $ enableIf (optLocalOnly opts) (local (responseLBS status403 [] LBS.empty))
