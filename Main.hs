@@ -6,9 +6,10 @@ import Control.Monad.Trans.Resource ( withInternalState, runResourceT ) -- resou
 import qualified Data.ByteString as BS -- bytestring
 import qualified Data.ByteString.Char8 as CBS -- bytestring
 import qualified Data.ByteString.Lazy as LBS -- bytestring
-import Data.Bits ( (.&.), unsafeShiftR ) -- base
+import Data.Bits ( (.&.), unsafeShiftR, xor ) -- base
 import Data.Foldable ( forM_ ) -- base
 import Data.Int ( Int64 ) -- base
+import Data.Word ( Word8 ) -- base
 import Data.List ( sort ) -- base
 import Data.Monoid ( (<>) ) -- base
 import Data.String ( fromString ) -- base
@@ -44,12 +45,53 @@ import qualified Data.X509 as X509 -- x509
 import qualified Data.Hourglass as HG -- hourglass
 import qualified System.Hourglass as HG -- hourglass
 
+-- For STUN
+import Control.Concurrent ( forkIO, threadDelay ) -- base
+import Control.Concurrent.MVar ( newEmptyMVar, putMVar, tryTakeMVar ) -- base
+import qualified Network.Socket as Net hiding ( sendTo, recvFrom ) -- network
+import qualified Network.Socket.ByteString as Net ( sendTo, recvFrom ) -- network
+import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
+
 -- Future things: case insensitive matching, optionally add CORS headers
 -- Maybe future things: virtual hosts, caching, DELETE support, dropping permissions, client certificates
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
 vERSION = "0.3.0.0"
+
+-- STUN code
+
+stunAddr :: Net.HostAddress
+stunAddr = 0x7F4CC2AD --0xADC24C7F -- stun.l.google.com:19302 (173.194.76.127)
+
+stunPort :: Net.PortNumber
+stunPort = 19302 -- Usually 3478
+
+sendStun :: Net.Socket -> IO ()
+sendStun s = Net.sendTo s bytes (Net.SockAddrInet stunPort stunAddr) >> return ()
+    where bytes = BS.pack [0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
+                           0x21, 0x12, 0xA4, 0x42, -- Magic Cookie
+                           0x00, 0x00, 0x00, 0x00, -- Transaction ID (should be cryptographically random
+                           0x00, 0x00, 0x00, 0x00, -- and unique, but who cares?)
+                           0x00, 0x00, 0x00, 0x00]
+    
+recvStun :: Net.Socket -> IO [Word8]
+recvStun s = do -- Assuming successful XOR-MAPPED-ADDRESS response.  See RFC5389. TODO: Don't assume so much.
+    (bytes, addr) <- Net.recvFrom s 576
+    let [b0, b1, b2, b3] = BS.unpack $ BS.drop 28 bytes
+    return [b0 `xor` 0x21, b1 `xor` 0x12, b2 `xor` 0xA4, b3 `xor` 0x42]
+    
+doStun :: IO (Maybe [Word8]) -- TODO: add bracket
+doStun = do
+    s <- Net.socket Net.AF_INET Net.Datagram Net.defaultProtocol
+    v <- newEmptyMVar
+    forkIO (recvStun s >>= putMVar v)
+    sendStun s
+    threadDelay 1000000 -- wait a second
+    Net.close s
+    tryTakeMVar v
+    
+-- Certificate generation code
 
 rsaPublicExponent :: Integer
 rsaPublicExponent = 65537
@@ -87,6 +129,47 @@ generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM
           pemCert = PEM.PEM (fromString "CERTIFICATE") [] certBytes  -- This is a mite silly.  Wrap in PEM just to immediately unwrap...
           pemKey = PEM.PEM (fromString "RSA PRIVATE KEY") [] keyBytes
 
+-- File upload
+
+update :: Options -> Policy -> Middleware
+update opts policy app req k = do
+    when (requestMethod req == methodPost) $ do
+        runResourceT $ do
+            (_, fs) <- withInternalState (\s -> parseRequestBody (tempFileBackEnd s) req)
+            let fs' = map (tryPolicy policy . CBS.unpack . BS.tail . ((rawPathInfo req <> fromString "/") <>) . fileName . snd) fs
+            let prefix = CBS.unpack (BS.tail (rawPathInfo req))
+            liftIO $ forM_ fs $ \(_, f) ->
+                case tryPolicy policy (prefix </> CBS.unpack (fileName f)) of
+                    Nothing -> return ()
+                    Just tgt -> do
+                        let src = fileContent f
+                        when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
+                        copyFile src tgt
+    app req k -- We execute the next Application regardless so that we return a listing after the POST completes.
+
+-- Directory listing
+
+-- TODO: Make this less fugly.
+directoryListing :: Options -> FilePath -> Middleware -- TODO: Handle exceptions.  Note, this isn't critical.  It will carry on.
+directoryListing opts baseDir app req k = do
+    let path = baseDir </> CBS.unpack (BS.tail $ rawPathInfo req) -- TODO: This unpack is ugly.
+    b <- doesDirectoryExist path
+    if not b then app req k else do
+        when (optVerbose opts) $ putStrLn $ "Rendering listing for " ++ path
+        html <- fmap container (mapM (\p -> fileDetails p (path </> p)) =<< fmap sort (getDirectoryContents path))
+        k (responseLBS status200 [] html)
+  where allowWrites = optAllowUploads opts
+        fileDetails label f = liftA2 (renderFile label f) (doesDirectoryExist f) (getModificationTime f)
+        renderFile label path isDirectory modTime = LBS.concat $ map fromString [
+            "<tr><td>", if isDirectory then "d" else "f", "</td><td><a href=\"/", path, "\">", label, "</a></td><td>", show modTime, "</td></tr>"
+          ]
+        container xs
+          = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}form { display: " ++ (if allowWrites then "inherit" else "none") ++ ";}</style></head><body><div class=\"list\"><table><tr><td></td><td>Name</td><td>Last Modified</td></tr>")
+             <> LBS.concat xs
+             <> fromString ("</table></div><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
+
+-- Option handling
+
 data Options = Options {
     optPort :: Int,
 
@@ -98,6 +181,8 @@ data Options = Options {
     optDirectoryListings :: Bool,
 
     optLocalOnly :: Bool,
+
+    optGetIP :: Bool,
 
     optHeaders :: [String], 
 
@@ -122,6 +207,7 @@ defOptions = Options {
     optCompress = True,
     optDirectoryListings = True,
     optLocalOnly = False,
+    optGetIP = True,
     optHeaders = [],
     optAuthentication = True,
     optRealm = "",
@@ -143,6 +229,8 @@ options = [
         "Print diagnostic output.",
     Option "l" ["local"] (NoArg (\opt -> opt { optLocalOnly = True })) 
         "Only accept connections from localhost.",
+    Option "" ["no-stun"] (NoArg (\opt -> opt { optGetIP = False })) 
+        "Don't attempt to get the public IP via STUN.",
     Option "X" [] (ReqArg (\h opt -> opt { optHeaders = h : optHeaders opt }) "HEADER")
         "Add HEADER to all server responses.",
     Option "z" ["gzip", "compress"] (NoArg (\opt -> opt { optCompress = True })) 
@@ -189,43 +277,18 @@ enableIf :: Bool -> (a -> a) -> a -> a
 enableIf True f = f
 enableIf    _ _ = id
 
-update :: Options -> Policy -> Middleware
-update opts policy app req k = do
-    when (requestMethod req == methodPost) $ do
-        runResourceT $ do
-            (_, fs) <- withInternalState (\s -> parseRequestBody (tempFileBackEnd s) req)
-            let fs' = map (tryPolicy policy . CBS.unpack . BS.tail . ((rawPathInfo req <> fromString "/") <>) . fileName . snd) fs
-            let prefix = CBS.unpack (BS.tail (rawPathInfo req))
-            liftIO $ forM_ fs $ \(_, f) ->
-                case tryPolicy policy (prefix </> CBS.unpack (fileName f)) of
-                    Nothing -> return ()
-                    Just tgt -> do
-                        let src = fileContent f
-                        when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
-                        copyFile src tgt
-    app req k -- We execute the next Application regardless so that we return a listing after the POST completes.
-
--- TODO: Make this less fugly.
-directoryListing :: Options -> FilePath -> Middleware -- TODO: Handle exceptions.  Note, this isn't critical.  It will carry on.
-directoryListing opts baseDir app req k = do
-    let path = baseDir </> CBS.unpack (BS.tail $ rawPathInfo req) -- TODO: This unpack is ugly.
-    b <- doesDirectoryExist path
-    if not b then app req k else do
-        when (optVerbose opts) $ putStrLn $ "Rendering listing for " ++ path
-        html <- fmap container (mapM (\p -> fileDetails p (path </> p)) =<< fmap sort (getDirectoryContents path))
-        k (responseLBS status200 [] html)
-  where allowWrites = optAllowUploads opts
-        fileDetails label f = liftA2 (renderFile label f) (doesDirectoryExist f) (getModificationTime f)
-        renderFile label path isDirectory modTime = LBS.concat $ map fromString [
-            "<tr><td>", if isDirectory then "d" else "f", "</td><td><a href=\"/", path, "\">", label, "</a></td><td>", show modTime, "</td></tr>"
-          ]
-        container xs
-          = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}form { display: " ++ (if allowWrites then "inherit" else "none") ++ ";}</style></head><body><div class=\"list\"><table><tr><td></td><td>Name</td><td>Last Modified</td></tr>")
-             <> LBS.concat xs
-             <> fromString ("</table></div><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
-
 app404 :: Application
 app404 req k = k (responseLBS status404 [] (fromString "File Not Found"))
+
+explodeHostAddress :: Net.HostAddress -> [Word8]
+explodeHostAddress h = [fromIntegral h, 
+                        fromIntegral (h `unsafeShiftR` 8),
+                        fromIntegral (h `unsafeShiftR` 16),
+                        fromIntegral (h `unsafeShiftR` 24)]
+
+prettyAddress :: Bool -> [Word8] -> Int -> String
+prettyAddress isHTTPS [b0, b1, b2, b3] port
+    = concat [if isHTTPS then "https://" else "http://", show b0, ".", show b1, ".", show b2, ".", show b3, ":", show port]
 
 -- A "base 32" encode so we don't have differing case in the password.
 base32Encode :: BS.ByteString -> BS.ByteString
@@ -245,12 +308,23 @@ serve opts dir = do
     case validateOptions opts of
         Just err -> putStrLn err
         Nothing -> do
+            putStr "Private Address: " 
+            hn <- getHostName
+            addrs <- fmap (take 1 . hostAddresses) (getHostByName hn) -- TODO: maybe have an option to list all addresses
+            forM_ addrs $ \ip -> putStrLn (prettyAddress (optHTTPS opts) (explodeHostAddress ip) (optPort opts))
+
+            when (optGetIP opts) $ do
+                mip <- doStun 
+                case mip of
+                    Nothing -> putStrLn "Finding public IP failed." 
+                    Just ip -> do 
+                        putStr "Public Address: " 
+                        putStrLn (prettyAddress (optHTTPS opts) ip (optPort opts))
             when (optAuthentication opts && not (BS.null (optUserName opts))) $
                 putStrLn $ "Username is: " ++ CBS.unpack (optUserName opts)
             when (optAuthentication opts && BS.null (optPassword opts)) $ do
                 putStrLn $ "Generated password is: " ++ CBS.unpack pw
                 putStrLn "Use --no-auth if password protection is not desired."
-            putStrLn $ "Listening on port " ++ show (optPort opts)
             runner now g'
                 $ enableIf (optVerbose opts) logStdout
                 $ enableIf (optLocalOnly opts) (local (responseLBS status403 [] LBS.empty))
@@ -278,7 +352,7 @@ serve opts dir = do
         policy = basePolicy <> addBase dir
 
 main :: IO ()
-main = do
+main = Net.withSocketsDo $ do
     args <- getArgs
     case getOpt Permute options args of
         (os, [], []) -> serve (combine os) "."

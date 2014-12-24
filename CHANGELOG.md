@@ -7,9 +7,11 @@ All notable changes to this project will be documented in this file.
 - Support for generating throw-away TLS certificates.
 - Support for generating password for Basic Authentication.
 - Support for adding custom headers to all responses.
+- Support getting public IP via Google STUN server.
 
 ### Changed
 - Change defaults to use HTTPS and Basic Authentication.
+- Change display of connection information to a copyable address.
 - Requires a currently non-existent version of x509 to generate valid certificates.  (Pull request outstanding.)
 
 ### Removed

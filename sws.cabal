@@ -76,6 +76,7 @@ executable sws
     filepath(==1.3.*), 
     http-types(==0.8.*), 
     hourglass(==0.2.*),
+    network(==2.6.*),
     pem(==0.2.*),
     resourcet(==1.1.*),
     transformers(==0.4.*),
