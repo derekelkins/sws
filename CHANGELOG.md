@@ -1,18 +1,19 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
-## 0.3.0.0 - Unreleased
+## 0.3.0.0 - 2014-12-29
 ### Added
 - CHANGELOG.md and README.md
 - Support for generating throw-away TLS certificates.
 - Support for generating password for Basic Authentication.
 - Support for adding custom headers to all responses.
 - Support getting public IP via Google STUN server.
+- Added Quiet mode and Dev Mode.
 
 ### Changed
 - Change defaults to use HTTPS and Basic Authentication.
 - Change display of connection information to a copyable address.
-- Requires a currently non-existent version of x509 to generate valid certificates.  (Pull request outstanding.)
+- Currently works around a bug in x509 to generate valid certificates.  (Pull request outstanding.)
 
 ### Removed
 - \-\-allow\-http is removed.  It did not appear to work anyway.
