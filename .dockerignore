@@ -1,0 +1,8 @@
+.dockerignore
+.git
+.cabal-sandbox
+cabal.sandbox.config
+dist/
+.*.sw*
+.vagrant
+Vagrantfile
