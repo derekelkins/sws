@@ -17,7 +17,7 @@ import System.Console.GetOpt ( getOpt, usageInfo, OptDescr(..), ArgDescr(..), Ar
 import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, copyFile  ) -- directory
 import System.Environment ( getArgs ) -- base
 import System.FilePath ( (</>) ) -- filepath
-import System.IO ( putStrLn ) -- base
+import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr ) -- base
 import Network.HTTP.Types.Status ( status200, status403, status404 ) -- http-types
 import Network.HTTP.Types.Method ( methodPost ) -- http-types
 import Network.Wai ( Application, Middleware, requestMethod, rawPathInfo, responseLBS ) -- wai
@@ -37,13 +37,16 @@ import Crypto.PubKey.RSA.PKCS15 ( sign ) -- crypto-pubkey
 import Crypto.PubKey.HashDescr ( hashDescrSHA256 ) -- crypto-pubkey
 import Crypto.Random ( EntropyPool, createEntropyPool, cprgCreate, cprgGenerate, SystemRNG ) -- crypto-random
 import Data.ASN1.OID ( getObjectID ) -- asn1-types
-import Data.ASN1.Types ( toASN1 ) -- asn1-types
+import Data.ASN1.Types ( toASN1, {- for work-around -} ASN1Object ) -- asn1-types
 import Data.ASN1.BinaryEncoding ( DER(DER) ) -- asn1-encoding
 import Data.ASN1.Encoding ( encodeASN1' ) -- asn1-encoding
 import qualified Data.PEM as PEM -- pem
 import qualified Data.X509 as X509 -- x509
 import qualified Data.Hourglass as HG -- hourglass
 import qualified System.Hourglass as HG -- hourglass
+-- for work-around
+import Data.ASN1.Types ( ASN1(..), ASN1ConstructionType(..), ASN1TimeType(..) )
+import Data.ASN1.Types.Lowlevel ( ASN1Class(..) )
 
 -- For STUN
 import Control.Concurrent ( forkIO, threadDelay ) -- base
@@ -102,6 +105,29 @@ rsaSizeInBytes = 256 -- Corresponds to 2048 bit encryption
 certExpiryInDays :: Int64
 certExpiryInDays = 30
 
+-- Temporary work-around for bug in x509.
+newtype CertificateWorkaround = CW X509.Certificate
+    deriving ( Eq, Show )
+
+encodeCertificateHeader :: X509.Certificate -> [ASN1]
+encodeCertificateHeader cert =
+    eVer ++ eSerial ++ eAlgId ++ eIssuer ++ eValidity ++ eSubject ++ epkinfo ++ eexts
+  where eVer      = asn1Container (Container Context 0) [IntVal (fromIntegral $ X509.certVersion cert)]
+        eSerial   = [IntVal $ X509.certSerial cert]
+        eAlgId    = toASN1 (X509.certSignatureAlg cert) []
+        eIssuer   = toASN1 (X509.certIssuerDN cert) []
+        (t1, t2)  = X509.certValidity cert
+        eValidity = asn1Container Sequence [ASN1Time TimeGeneralized t1 (Just (HG.TimezoneOffset 0))
+                                           ,ASN1Time TimeGeneralized t2 (Just (HG.TimezoneOffset 0))]
+        eSubject  = toASN1 (X509.certSubjectDN cert) []
+        epkinfo   = toASN1 (X509.certPubKey cert) []
+        eexts     = toASN1 (X509.certExtensions cert) []
+        asn1Container ty l = [Start ty] ++ l ++ [End ty]
+
+instance ASN1Object CertificateWorkaround where
+    toASN1 (CW cert) = (encodeCertificateHeader cert ++)
+-- End work-around code
+
 generateCert :: Options -> HG.DateTime -> SystemRNG -> (Warp.TLSSettings, SystemRNG)
 generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM.pemWriteBS pemKey)) {
                                 Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }, g'')
@@ -124,7 +150,7 @@ generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM
                   X509.certExtensions = X509.Extensions Nothing
               }
           signFunc xs = (either (error . show) id (sign Nothing hashDescrSHA256 sk xs), sigAlg, ())
-          certBytes = X509.encodeSignedObject $ fst $ X509.objectToSignedExact signFunc cert
+          certBytes = X509.encodeSignedObject $ fst $ X509.objectToSignedExact signFunc (CW cert)
           keyBytes = encodeASN1' DER (toASN1 sk [])
           pemCert = PEM.PEM (fromString "CERTIFICATE") [] certBytes  -- This is a mite silly.  Wrap in PEM just to immediately unwrap...
           pemKey = PEM.PEM (fromString "RSA PRIVATE KEY") [] keyBytes
@@ -175,6 +201,7 @@ data Options = Options {
 
     optHelp :: Bool,
     optVerbose :: Bool,
+    optQuiet :: Bool,
 
     optCompress :: Bool,
 
@@ -204,6 +231,7 @@ defOptions = Options {
     optPort = 3000,
     optHelp = False,
     optVerbose = False, -- TODO: Set the logging settings for the various middlewares.
+    optQuiet = False,
     optCompress = True,
     optDirectoryListings = True,
     optLocalOnly = False,
@@ -227,6 +255,8 @@ options = [
         "Print usage.",
     Option "V" ["verbose"] (NoArg (\opt -> opt { optVerbose = True })) 
         "Print diagnostic output.",
+    Option "q" ["quiet"] (NoArg (\opt -> opt { optQuiet = True })) 
+        "Only output access log information.",
     Option "l" ["local"] (NoArg (\opt -> opt { optLocalOnly = True })) 
         "Only accept connections from localhost.",
     Option "" ["no-stun"] (NoArg (\opt -> opt { optGetIP = False })) 
@@ -308,29 +338,30 @@ serve opts dir = do
         pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
         headers = map ((\(x,y) -> (x, BS.drop 2 y)) . BS.breakSubstring (fromString ": ") . fromString) (optHeaders opts)
     case validateOptions opts of
-        Just err -> putStrLn err
+        Just err -> hPutStrLn stderr err
         Nothing -> do
-            putStr "Private Address: " 
-            if optLocalOnly opts then do
-                putStrLn (prettyAddress (optHTTPS opts) [127,0,0,1] (optPort opts))
-              else do
-                hn <- getHostName
-                addrs <- fmap (take 1 . hostAddresses) (getHostByName hn) -- TODO: maybe have an option to list all addresses
-                forM_ addrs $ \ip -> putStrLn (prettyAddress (optHTTPS opts) (explodeHostAddress ip) (optPort opts))
+            when (not $ optQuiet opts) $ do
+                putStr "Private Address: " 
+                if optLocalOnly opts then do
+                    putStrLn (prettyAddress (optHTTPS opts) [127,0,0,1] (optPort opts))
+                  else do
+                    hn <- getHostName
+                    addrs <- fmap (take 1 . hostAddresses) (getHostByName hn) -- TODO: maybe have an option to list all addresses
+                    forM_ addrs $ \ip -> putStrLn (prettyAddress (optHTTPS opts) (explodeHostAddress ip) (optPort opts))
 
-            when (optGetIP opts && not (optLocalOnly opts)) $ do
-                mip <- doStun 
-                case mip of
-                    Nothing -> putStrLn "Finding public IP failed." 
-                    Just ip -> do 
-                        putStr "Public Address: " 
-                        putStrLn (prettyAddress (optHTTPS opts) ip (optPort opts))
+                when (optGetIP opts && not (optLocalOnly opts)) $ do
+                    mip <- doStun 
+                    case mip of
+                        Nothing -> hPutStrLn stderr "Finding public IP failed." 
+                        Just ip -> do 
+                            putStr "Public Address: " 
+                            putStrLn (prettyAddress (optHTTPS opts) ip (optPort opts))
 
-            when (optAuthentication opts && not (BS.null (optUserName opts))) $
-                putStrLn $ "Username is: " ++ CBS.unpack (optUserName opts)
-            when (optAuthentication opts && BS.null (optPassword opts)) $ do
-                putStrLn $ "Generated password is: " ++ CBS.unpack pw
-                putStrLn "Use --no-auth if password protection is not desired."
+                when (optAuthentication opts && not (BS.null (optUserName opts))) $
+                    putStrLn $ "Username is: " ++ CBS.unpack (optUserName opts)
+                when (optAuthentication opts && BS.null (optPassword opts)) $ do
+                    putStrLn $ "Generated password is: " ++ CBS.unpack pw
+                    putStrLn "Use --no-auth if password protection is not desired."
 
             runner now g'
                 $ enableIf (optVerbose opts) logStdout
@@ -347,8 +378,9 @@ serve opts dir = do
   where runner now g | optHTTPS opts && certProvided 
                         = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
                      | optHTTPS opts = \app -> do
-                        putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
-                        putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
+                        when (not $ optQuiet opts) $ do
+                            putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
+                            putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
                         Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
                      | otherwise = Warp.run (optPort opts)
             where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
@@ -364,5 +396,5 @@ main = Net.withSocketsDo $ do
     case getOpt Permute options args of
         (os, [], []) -> serve (combine os) "."
         (os, [dir], []) -> serve (combine os) dir
-        (_,_,errs) -> putStrLn (concat errs ++ usageInfo usageHeader options)
+        (_,_,errs) -> hPutStrLn stderr (concat errs ++ usageInfo usageHeader options)
   where combine = foldr ($) defOptions
