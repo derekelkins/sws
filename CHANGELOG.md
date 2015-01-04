@@ -1,6 +1,10 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.3.1.0 - Unreleased
+### Added
+- Added Public mode.
+
 ## 0.3.0.0 - 2014-12-29
 ### Added
 - CHANGELOG.md and README.md

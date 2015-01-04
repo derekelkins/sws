@@ -60,7 +60,7 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.3.0.1"
+vERSION = "0.3.1.0"
 
 -- STUN code
 
@@ -263,6 +263,8 @@ options = [
         "Don't attempt to get the public IP via STUN.",
     Option "d" ["dev-mode"] (NoArg (\opt -> opt { optGetIP = False, optLocalOnly = True, optAuthentication = False, optHTTPS = False })) 
         "Equivalent to --local --no-auth --no-https --no-stun.",
+    Option "P" ["public"] (NoArg (\opt -> opt { optAuthentication = False, optHTTPS = False })) 
+        "Equivalent to --no-auth --no-https.",
     Option "X" [] (ReqArg (\h opt -> opt { optHeaders = h : optHeaders opt }) "HEADER")
         "Add HEADER to all server responses.",
     Option "z" ["gzip", "compress"] (NoArg (\opt -> opt { optCompress = True })) 
