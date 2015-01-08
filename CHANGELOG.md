@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Added Public mode.
 
+### Changed
+- Dependency bounds changed on warp-tls to pull in critical bug fix.
+
 ## 0.3.0.0 - 2014-12-29
 ### Added
 - CHANGELOG.md and README.md

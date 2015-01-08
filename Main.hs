@@ -393,7 +393,7 @@ serve opts dir = do
         policy = basePolicy <> addBase dir
 
 main :: IO ()
-main = Net.withSocketsDo $ do
+main = do
     args <- getArgs
     case getOpt Permute options args of
         (os, [], []) -> serve (combine os) "."
