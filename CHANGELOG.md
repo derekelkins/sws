@@ -1,7 +1,7 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
-## 0.3.1.0 - Unreleased
+## 0.3.1.0 - 2015-01-07
 ### Added
 - Added Public mode.
 
