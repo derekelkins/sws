@@ -18,6 +18,7 @@ import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificat
 import System.Environment ( getArgs ) -- base
 import System.FilePath ( (</>) ) -- filepath
 import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr ) -- base
+import System.IO.Error ( catchIOError ) -- base
 import Network.HTTP.Types.Status ( status200, status403, status404 ) -- http-types
 import Network.HTTP.Types.Method ( methodPost ) -- http-types
 import Network.Wai ( Application, Middleware, requestMethod, rawPathInfo, responseLBS ) -- wai
@@ -60,7 +61,7 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.3.1.0"
+vERSION = "0.3.1.1"
 
 -- STUN code
 
@@ -186,6 +187,7 @@ directoryListing opts baseDir app req k = do
         k (responseLBS status200 [] html)
   where allowWrites = optAllowUploads opts
         fileDetails label f = liftA2 (renderFile label f) (doesDirectoryExist f) (getModificationTime f)
+                                `catchIOError` \_ -> return (fromString "")
         renderFile label path isDirectory modTime = LBS.concat $ map fromString [
             "<tr><td>", if isDirectory then "d" else "f", "</td><td><a href=\"/", path, "\">", label, "</a></td><td>", show modTime, "</td></tr>"
           ]
