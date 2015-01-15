@@ -26,6 +26,24 @@ You build an [unhosted](https://unhosted.org/) web application or you mock out A
 simple testing by running "`sws -d`".  (Admittedly, using a file URI will probably work pretty well too, though maybe
 not so much for mocked POST requests...)  You want to show a friend.  Just make that "`sws`".
 
+### Use-case 3: Instant read-only Git hosting
+
+```bash
+git clone --bare /path/to/myrepo ~/public/myrepo.git
+cd ~/public/myrepo.git
+mv hooks/post-update.sample hooks/post-update
+chmod a+x hooks/post-update
+git update-server-info
+sws --no-compress -H example.com ~/public/
+```
+
+Elsewhere:
+```bash
+git -c http.sslVerify=false clone https://example.com:3000/myrepo.git
+```
+
+This would be even more instant with darcs.
+
 What it isn't
 -------------
 
