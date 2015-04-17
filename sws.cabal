@@ -36,7 +36,7 @@ author:              Derek Elkins
 maintainer:          derek.a.elkins@gmail.com
 
 -- A copyright notice.
-copyright:           Copyright (c) 2014 Derek Elkins
+copyright:           Copyright (c) 2014-2015 Derek Elkins
 
 category:            Web
 
@@ -68,7 +68,7 @@ executable sws
   build-depends:       
     asn1-types(==0.3.*),
     asn1-encoding(==0.9.*),
-    base >=4.6 && <4.8, 
+    base >=4.6 && <4.9,
     bytestring(==0.10.*), 
     crypto-pubkey(==0.2.*),
     crypto-random(==0.0.*),
