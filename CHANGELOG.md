@@ -1,6 +1,10 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.3.1.1 - 2015-04-17
+### Changed
+- Upper bound bump to support GHC 7.10.
+
 ## 0.3.1.0 - 2015-01-07
 ### Added
 - Added Public mode.
