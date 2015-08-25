@@ -61,23 +61,26 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.3.1.1"
+vERSION = "0.3.1.2"
 
 -- STUN code
 
-stunAddr :: Net.HostAddress
-stunAddr = 0x7F4CC2AD --0xADC24C7F -- stun.l.google.com:19302 (173.194.76.127)
+-- TODO: Make these parameters.
+stunHost :: String
+stunHost = "stun.l.google.com"
 
 stunPort :: Net.PortNumber
 stunPort = 19302 -- Usually 3478
 
 sendStun :: Net.Socket -> IO ()
-sendStun s = Net.sendTo s bytes (Net.SockAddrInet stunPort stunAddr) >> return ()
-    where bytes = BS.pack [0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
-                           0x21, 0x12, 0xA4, 0x42, -- Magic Cookie
-                           0x00, 0x00, 0x00, 0x00, -- Transaction ID (should be cryptographically random
-                           0x00, 0x00, 0x00, 0x00, -- and unique, but who cares?)
-                           0x00, 0x00, 0x00, 0x00]
+sendStun s = do
+    [stunAddr] <- fmap (take 1 . hostAddresses) (getHostByName stunHost) -- TODO: maybe have an option to list all addresses
+    Net.sendTo s bytes (Net.SockAddrInet stunPort stunAddr) >> return ()
+  where bytes = BS.pack [0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
+                         0x21, 0x12, 0xA4, 0x42, -- Magic Cookie
+                         0x00, 0x00, 0x00, 0x00, -- Transaction ID (should be cryptographically random
+                         0x00, 0x00, 0x00, 0x00, -- and unique, but who cares?)
+                         0x00, 0x00, 0x00, 0x00]
     
 recvStun :: Net.Socket -> IO [Word8]
 recvStun s = do -- Assuming successful XOR-MAPPED-ADDRESS response.  See RFC5389. TODO: Don't assume so much.

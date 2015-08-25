@@ -1,6 +1,11 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.3.1.2 - 2015-08-25
+### Changed
+- Upper bound bumps.
+- Make STUN server look up a bit more robust.
+
 ## 0.3.1.1 - 2015-04-17
 ### Changed
 - Upper bound bump to support GHC 7.10.
