@@ -16,7 +16,7 @@ import Data.String ( fromString ) -- base
 import System.Console.GetOpt ( getOpt, usageInfo, OptDescr(..), ArgDescr(..), ArgOrder(..) ) -- base
 import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, copyFile  ) -- directory
 import System.Environment ( getArgs ) -- base
-import System.FilePath ( (</>) ) -- filepath
+import System.FilePath ( makeRelative, (</>) ) -- filepath
 import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr ) -- base
 import System.IO.Error ( catchIOError ) -- base
 import Network.HTTP.Types.Status ( status200, status403, status404 ) -- http-types
@@ -32,22 +32,24 @@ import Network.Wai.Middleware.RequestLogger ( logStdout ) -- wai-extra
 import Network.Wai.Middleware.Static ( staticPolicy, addBase, isNotAbsolute, noDots, Policy, tryPolicy ) -- wai-middleware-static
 import Network.Wai.Parse ( tempFileBackEnd, parseRequestBody, fileName, fileContent ) -- wai-extra
 
+import Crypto.Random ( getSystemDRG, randomBytesGenerate, SystemDRG ) -- cryptonite
+
 -- For certificate generation.
-import Crypto.PubKey.RSA ( generate  ) -- crypto-pubkey
-import Crypto.PubKey.RSA.PKCS15 ( sign ) -- crypto-pubkey
-import Crypto.PubKey.HashDescr ( hashDescrSHA256 ) -- crypto-pubkey
-import Crypto.Random ( EntropyPool, createEntropyPool, cprgCreate, cprgGenerate, SystemRNG ) -- crypto-random
-import Data.ASN1.OID ( getObjectID ) -- asn1-types
-import Data.ASN1.Types ( toASN1, {- for work-around -} ASN1Object ) -- asn1-types
-import Data.ASN1.BinaryEncoding ( DER(DER) ) -- asn1-encoding
-import Data.ASN1.Encoding ( encodeASN1' ) -- asn1-encoding
-import qualified Data.PEM as PEM -- pem
-import qualified Data.X509 as X509 -- x509
+-- import Crypto.PubKey.RSA ( generate  ) -- crypto-pubkey
+-- import Crypto.PubKey.RSA.PKCS15 ( sign ) -- crypto-pubkey
+-- import Crypto.PubKey.HashDescr ( hashDescrSHA256 ) -- crypto-pubkey
+-- import Data.ASN1.OID ( getObjectID ) -- asn1-types
+-- import Data.ASN1.Types ( toASN1, {- for work-around -} ASN1Object ) -- asn1-types
+-- import Data.ASN1.BinaryEncoding ( DER(DER) ) -- asn1-encoding
+-- import Data.ASN1.Encoding ( encodeASN1' ) -- asn1-encoding
+-- import qualified Data.PEM as PEM -- pem
+-- import qualified Data.X509 as X509 -- x509
 import qualified Data.Hourglass as HG -- hourglass
 import qualified System.Hourglass as HG -- hourglass
+
 -- for work-around
-import Data.ASN1.Types ( ASN1(..), ASN1ConstructionType(..), ASN1TimeType(..) )
-import Data.ASN1.Types.Lowlevel ( ASN1Class(..) )
+-- import Data.ASN1.Types ( ASN1(..), ASN1ConstructionType(..), ASN1TimeType(..) )
+-- import Data.ASN1.Types.Lowlevel ( ASN1Class(..) )
 
 -- For STUN
 import Control.Concurrent ( forkIO, threadDelay ) -- base
@@ -61,7 +63,7 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.3.1.2"
+vERSION = "0.4.0.0"
 
 -- STUN code
 
@@ -109,6 +111,7 @@ rsaSizeInBytes = 256 -- Corresponds to 2048 bit encryption
 certExpiryInDays :: Int64
 certExpiryInDays = 30
 
+{-
 -- Temporary work-around for bug in x509.
 newtype CertificateWorkaround = CW X509.Certificate
     deriving ( Eq, Show )
@@ -131,12 +134,14 @@ encodeCertificateHeader cert =
 instance ASN1Object CertificateWorkaround where
     toASN1 (CW cert) = (encodeCertificateHeader cert ++)
 -- End work-around code
+-}
 
-generateCert :: Options -> HG.DateTime -> SystemRNG -> (Warp.TLSSettings, SystemRNG)
+{-
+generateCert :: Options -> HG.DateTime -> SystemDRG -> (Warp.TLSSettings, SystemDRG)
 generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM.pemWriteBS pemKey)) {
                                 Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }, g'')
     where later = HG.timeAdd now (HG.Hours (24*certExpiryInDays))
-          (bs, g') = cprgGenerate 8 g -- generate 8 random bytes for the serial number
+          (bs, g') = randomBytesGenerate 8 g -- generate 8 random bytes for the serial number
           ((pk, sk), g'') = generate g' rsaSizeInBytes rsaPublicExponent
           serialNum = BS.foldl' (\a w -> a*256 + fromIntegral w) 0 bs
           cn = getObjectID X509.DnCommonName
@@ -158,6 +163,7 @@ generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM
           keyBytes = encodeASN1' DER (toASN1 sk [])
           pemCert = PEM.PEM (fromString "CERTIFICATE") [] certBytes  -- This is a mite silly.  Wrap in PEM just to immediately unwrap...
           pemKey = PEM.PEM (fromString "RSA PRIVATE KEY") [] keyBytes
+-}
 
 -- File upload
 
@@ -192,7 +198,7 @@ directoryListing opts baseDir app req k = do
         fileDetails label f = liftA2 (renderFile label f) (doesDirectoryExist f) (getModificationTime f)
                                 `catchIOError` \_ -> return (fromString "")
         renderFile label path isDirectory modTime = LBS.concat $ map fromString [
-            "<tr><td>", if isDirectory then "d" else "f", "</td><td><a href=\"/", path, "\">", label, "</a></td><td>", show modTime, "</td></tr>"
+            "<tr><td>", if isDirectory then "d" else "f", "</td><td><a href=\"/", makeRelative baseDir path, "\">", label, "</a></td><td>", show modTime, "</td></tr>"
           ]
         container xs
           = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}form { display: " ++ (if allowWrites then "inherit" else "none") ++ ";}</style></head><body><div class=\"list\"><table><tr><td></td><td>Name</td><td>Last Modified</td></tr>")
@@ -246,7 +252,7 @@ defOptions = Options {
     optRealm = "",
     optUserName = fromString "guest",
     optPassword = BS.empty,
-    optHTTPS = True,
+    optHTTPS = False, --True,
     optHost = "localhost", 
     optCertificate = "",
     optKeyFile = "",
@@ -286,15 +292,17 @@ options = [
         "Require the given password. (Default: generated)",
     Option "u" ["username"] (ReqArg (\u opt -> opt { optUserName = fromString u }) "USERNAME") 
         ("Require the given username. (Default: " ++ show (optUserName defOptions)  ++ ")"),
+    {-
     Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True })) 
         "Enable HTTPS. (Default)", 
     Option "" ["no-https"] (NoArg (\opt -> opt { optHTTPS = False })) 
         "Disable HTTPS.", 
+    -}
     Option "H" ["host"] (ReqArg (\host opt -> opt { optHost = host }) "HOST") 
         ("Host name to use for generated certificate. (Default: " ++ show (optHost defOptions) ++ ")"),
-    Option "" ["certificate"] (ReqArg (\f opt -> opt { optCertificate = f }) "FILE")
+    Option "" ["certificate"] (ReqArg (\f opt -> opt { optCertificate = f, optHTTPS = True }) "FILE")
         "The path to the server certificate.",
-    Option "" ["key-file"] (ReqArg (\f opt -> opt { optKeyFile = f }) "FILE")
+    Option "" ["key-file"] (ReqArg (\f opt -> opt { optKeyFile = f, optHTTPS = True }) "FILE")
         "The path to the private key for the certificate.",
     Option "w" ["allow-uploads", "writable"] (NoArg (\opt -> opt { optAllowUploads = True }))
         "Allow files to be uploaded."
@@ -340,8 +348,8 @@ serve :: Options -> String -> IO ()
 serve (Options { optHelp = True }) _ = putStrLn $ usageInfo usageHeader options
 serve opts dir = do
     now <- HG.dateCurrent
-    g <- fmap cprgCreate createEntropyPool
-    let (prePW, g') = cprgGenerate 8 g -- generate 8 random bytes for the password if needed
+    g <- getSystemDRG 
+    let (prePW, g') = randomBytesGenerate 8 g -- generate 8 random bytes for the password if needed
         pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
         headers = map ((\(x,y) -> (x, BS.drop 2 y)) . BS.breakSubstring (fromString ": ") . fromString) (optHeaders opts)
     case validateOptions opts of
@@ -384,15 +392,15 @@ serve opts dir = do
                 $ app404
   where runner now g | optHTTPS opts && certProvided 
                         = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
-                     | optHTTPS opts = \app -> do
-                        when (not $ optQuiet opts) $ do
-                            putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
-                            putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
-                        Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
+                     -- | optHTTPS opts = \app -> do
+                     --    when (not $ optQuiet opts) $ do
+                     --        putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
+                     --        putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
+                     --    Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
                      | otherwise = Warp.run (optPort opts)
             where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
-                    Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") } 
-                  (tlsMemSettings, _) = generateCert opts now g
+                        Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") } 
+                  -- (tlsMemSettings, _) = generateCert opts now g
                   certProvided = not (null (optCertificate opts)) && not (null (optKeyFile opts))
 
         policy = basePolicy <> addBase dir

@@ -1,6 +1,12 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.4.0.0 - 2017-09-10
+### Changed
+- Upper bound bumps.
+### Removed
+- TLS certificate generation. The functionality was removed from the crypto library this depends upon.
+
 ## 0.3.1.2 - 2015-08-25
 ### Changed
 - Upper bound bumps.
