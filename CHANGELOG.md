@@ -1,6 +1,11 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.4.1.0 - 2018-02-10
+### Added
+- Upload only mode.
+- Options to control STUN.
+
 ## 0.4.0.0 - 2017-09-10
 ### Changed
 - Upper bound bumps.

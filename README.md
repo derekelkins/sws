@@ -16,7 +16,7 @@ a certificate is removed.*
     
 You want to send a large file to someone.  You browse to the directory containing it, type "`sws`", and give them
 your public IP.  They browse to it and download.  Maybe they are the ones sending the file, but aren't "technical".
-You browse to an empty directory, type "`sws -w`", and give them your public IP.  They browse to it and upload.
+You browse to an empty directory, type "`sws -w`" or "`sws -U`", and give them your public IP.  They browse to it and upload.
 
 In reality, you need to figure out what your public IP is and open a port in your firewall.  `sws` will currently
 use Google's STUN server to attempt to figure out your public IP.

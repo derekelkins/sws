@@ -63,21 +63,14 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.4.0.0"
+vERSION = "0.4.1.0"
 
 -- STUN code
 
--- TODO: Make these parameters.
-stunHost :: String
-stunHost = "stun.l.google.com"
-
-stunPort :: Net.PortNumber
-stunPort = 19302 -- Usually 3478
-
-sendStun :: Net.Socket -> IO ()
-sendStun s = do
-    [stunAddr] <- fmap (take 1 . hostAddresses) (getHostByName stunHost) -- TODO: maybe have an option to list all addresses
-    Net.sendTo s bytes (Net.SockAddrInet stunPort stunAddr) >> return ()
+sendStun :: Options -> Net.Socket -> IO ()
+sendStun opts s = do
+    [stunAddr] <- fmap (take 1 . hostAddresses) (getHostByName (optStunHost opts)) -- TODO: maybe have an option to list all addresses
+    Net.sendTo s bytes (Net.SockAddrInet (optStunPort opts) stunAddr) >> return ()
   where bytes = BS.pack [0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
                          0x21, 0x12, 0xA4, 0x42, -- Magic Cookie
                          0x00, 0x00, 0x00, 0x00, -- Transaction ID (should be cryptographically random
@@ -90,12 +83,12 @@ recvStun s = do -- Assuming successful XOR-MAPPED-ADDRESS response.  See RFC5389
     let [b0, b1, b2, b3] = BS.unpack $ BS.drop 28 bytes
     return [b0 `xor` 0x21, b1 `xor` 0x12, b2 `xor` 0xA4, b3 `xor` 0x42]
     
-doStun :: IO (Maybe [Word8]) -- TODO: add bracket
-doStun = do
+doStun :: Options -> IO (Maybe [Word8]) -- TODO: add bracket
+doStun opts = do
     s <- Net.socket Net.AF_INET Net.Datagram Net.defaultProtocol
     v <- newEmptyMVar
     forkIO (recvStun s >>= putMVar v)
-    sendStun s
+    sendStun opts s
     threadDelay 1000000 -- wait a second
     Net.close s
     tryTakeMVar v
@@ -205,6 +198,12 @@ directoryListing opts baseDir app req k = do
              <> LBS.concat xs
              <> fromString ("</table></div><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
 
+uploadForm :: Options -> Policy -> Middleware
+uploadForm opts policy app req k = do
+    when (optVerbose opts) $ putStrLn $ "Rendering upload form"
+    k (responseLBS status200 [] html)
+  where html = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}</style></head><body><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
+
 -- Option handling
 
 data Options = Options {
@@ -221,6 +220,8 @@ data Options = Options {
     optLocalOnly :: Bool,
 
     optGetIP :: Bool,
+    optStunHost :: String,
+    optStunPort :: Net.PortNumber,
 
     optHeaders :: [String], 
 
@@ -235,7 +236,9 @@ data Options = Options {
     optHost :: String,
     optCertificate :: FilePath,
     optKeyFile :: FilePath,
-    optAllowUploads :: Bool }
+
+    optAllowUploads :: Bool,
+    optUploadOnly :: Bool}
 
 defOptions :: Options
 defOptions = Options {
@@ -247,6 +250,8 @@ defOptions = Options {
     optDirectoryListings = True,
     optLocalOnly = False,
     optGetIP = True,
+    optStunHost = "stun.l.google.com",
+    optStunPort = 19302 ,
     optHeaders = [],
     optAuthentication = True,
     optRealm = "",
@@ -256,7 +261,8 @@ defOptions = Options {
     optHost = "localhost", 
     optCertificate = "",
     optKeyFile = "",
-    optAllowUploads = False }
+    optAllowUploads = False,
+    optUploadOnly = False}
 
 options :: [OptDescr (Options -> Options)]
 options = [
@@ -272,6 +278,10 @@ options = [
         "Only accept connections from localhost.",
     Option "" ["no-stun"] (NoArg (\opt -> opt { optGetIP = False })) 
         "Don't attempt to get the public IP via STUN.",
+    Option "" ["stun-host"] (ReqArg (\h opt -> opt { optStunHost = h }) "URL") 
+        ("Stun host. (Default: \"" ++ optStunHost defOptions ++ "\")"),
+    Option "" ["stun-port"] (ReqArg (\p opt -> opt { optStunPort = read p }) "PORT") 
+        ("Stun port. Usually 3478. (Default: " ++ show (optStunPort defOptions) ++ ")"),
     Option "d" ["dev-mode"] (NoArg (\opt -> opt { optGetIP = False, optLocalOnly = True, optAuthentication = False, optHTTPS = False })) 
         "Equivalent to --local --no-auth --no-https --no-stun.",
     Option "P" ["public"] (NoArg (\opt -> opt { optAuthentication = False, optHTTPS = False })) 
@@ -305,7 +315,9 @@ options = [
     Option "" ["key-file"] (ReqArg (\f opt -> opt { optKeyFile = f, optHTTPS = True }) "FILE")
         "The path to the private key for the certificate.",
     Option "w" ["allow-uploads", "writable"] (NoArg (\opt -> opt { optAllowUploads = True }))
-        "Allow files to be uploaded."
+        "Allow files to be uploaded.",
+    Option "U" ["upload-only"] (NoArg (\opt -> opt { optUploadOnly = True }))
+        "Only serve an upload form and do not serve any files."
  ]
 
 -- TODO: KeyFile w/o Certificate and vice-versa, KeyFile/Certificate without HTTPS,
@@ -365,7 +377,7 @@ serve opts dir = do
                     forM_ addrs $ \ip -> putStrLn (prettyAddress (optHTTPS opts) (explodeHostAddress ip) (optPort opts))
 
                 when (optGetIP opts && not (optLocalOnly opts)) $ do
-                    mip <- doStun 
+                    mip <- doStun opts
                     case mip of
                         Nothing -> hPutStrLn stderr "Finding public IP failed." 
                         Just ip -> do 
@@ -386,8 +398,8 @@ serve opts dir = do
                                (fromString $ optRealm opts))
                 $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
                 $ enableIf (not (null headers)) (addHeaders headers)
-                $ enableIf (optAllowUploads opts) (update opts policy)
-                $ staticPolicy policy 
+                $ enableIf (optAllowUploads opts || optUploadOnly opts) (update opts policy)
+                $ (if optUploadOnly opts then uploadForm opts policy else staticPolicy policy)
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)
                 $ app404
   where runner now g | optHTTPS opts && certProvided 
