@@ -165,14 +165,16 @@ update opts policy app req k = do
     when (requestMethod req == methodPost) $ do
         runResourceT $ do
             (_, fs) <- withInternalState (\s -> parseRequestBody (tempFileBackEnd s) req)
-            let fs' = map (tryPolicy policy . CBS.unpack . BS.tail . ((rawPathInfo req <> fromString "/") <>) . fileName . snd) fs
-            let prefix = CBS.unpack (BS.tail (rawPathInfo req))
+            -- If UploadOnly then ignore the path part of the URL, i.e. only write the file to the base directory.
+            let prefix = if optUploadOnly opts then "" else CBS.unpack (BS.tail (rawPathInfo req))
+            liftIO $ when (optVerbose opts) $ putStrLn (CBS.unpack (BS.tail (rawPathInfo req)))
             liftIO $ forM_ fs $ \(_, f) ->
                 case tryPolicy policy (prefix </> CBS.unpack (fileName f)) of
                     Nothing -> return ()
                     Just tgt -> do
                         let src = fileContent f
                         when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
+                        -- TODO: copyFile simply overwrites the target file if it exists. Allow for other policies.
                         copyFile src tgt
     app req k -- We execute the next Application regardless so that we return a listing after the POST completes.
 
