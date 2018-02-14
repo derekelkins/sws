@@ -18,8 +18,8 @@ import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificat
 import System.Environment ( getArgs ) -- base
 import System.FilePath ( makeRelative, (</>), takeDirectory, takeFileName ) -- filepath
 import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr, hClose, openBinaryTempFileWithDefaultPermissions ) -- base
-import System.IO.Error ( userError, ioError, catchIOError ) -- base
-import Network.HTTP.Types.Status ( status200, status403, status404 ) -- http-types
+import System.IO.Error ( userError, ioError, catchIOError, isUserError, ioeGetErrorString ) -- base
+import Network.HTTP.Types.Status ( status200, status403, status404, status409 ) -- http-types
 import Network.HTTP.Types.Method ( methodPost ) -- http-types
 import Network.Wai ( Application, Middleware, requestMethod, rawPathInfo, responseLBS ) -- wai
 import qualified Network.Wai.Handler.Warp as Warp -- warp
@@ -163,7 +163,7 @@ generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM
 
 update :: Options -> Policy -> (String -> String -> IO ()) -> Middleware
 update opts policy copyFileFn app req k = do
-    when (requestMethod req == methodPost) $ do
+    if requestMethod req == methodPost then (do
         runResourceT $ do
             (_, fs) <- withInternalState (\s -> parseRequestBody (tempFileBackEnd s) req)
             -- If UploadOnly then ignore the path part of the URL, i.e. only write the file to the base directory.
@@ -176,7 +176,10 @@ update opts policy copyFileFn app req k = do
                         let src = fileContent f
                         when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
                         copyFileFn src tgt
-    app req k -- We execute the next Application regardless so that we return a listing after the POST completes.
+        app req k) -- We execute the next Application regardless so that we return a listing after the POST completes.
+          `catchIOError` \e -> if isUserError e then k (responseLBS status409 [] (LBS.fromChunks [CBS.pack $ ioeGetErrorString e])) else ioError e
+      else
+        app req k
 
 overwriteFile :: String -> String -> IO ()
 overwriteFile = copyFile
