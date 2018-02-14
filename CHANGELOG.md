@@ -1,10 +1,11 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
-## 0.4.1.0 - 2018-02-10
+## 0.4.1.0 - 2018-02-14
 ### Added
 - Upload only mode.
 - Options to control STUN.
+- Options to control what happens when a file is uploaded which already exists.
 
 ## 0.4.0.0 - 2017-09-10
 ### Changed
