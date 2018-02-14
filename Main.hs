@@ -74,7 +74,7 @@ sendStun opts tId s = do -- TODO: Perhaps add check that length tId == 12
   where bytes = BS.pack ([0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
                           0x21, 0x12, 0xA4, 0x42] -- Magic Cookie
                          ++ tId) -- Transaction ID (should be cryptographically random and unique)
-    
+
 recvStun :: [Word8] -> Net.Socket -> IO [Word8]
 recvStun tId s = do -- Assuming successful XOR-MAPPED-ADDRESS response.  See RFC5389. TODO: Don't assume so much.
     (bytes, addr) <- Net.recvFrom s 576
@@ -83,7 +83,7 @@ recvStun tId s = do -- Assuming successful XOR-MAPPED-ADDRESS response.  See RFC
     when (tId /= tId') $ ioError (userError "Mismatched Transaction ID in STUN response.")
     let [b0, b1, b2, b3] = BS.unpack $ BS.drop 28 bytes
     return [b0 `xor` 0x21, b1 `xor` 0x12, b2 `xor` 0xA4, b3 `xor` 0x42]
-    
+
 doStun :: Options -> [Word8] -> IO (Maybe [Word8]) -- TODO: add bracket
 doStun opts tId = do
     s <- Net.socket Net.AF_INET Net.Datagram Net.defaultProtocol
@@ -93,7 +93,7 @@ doStun opts tId = do
     threadDelay 1000000 -- wait a second
     Net.close s
     tryTakeMVar v
-    
+
 -- Certificate generation code
 
 rsaPublicExponent :: Integer
@@ -147,7 +147,7 @@ generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM
                   X509.certSerial = serialNum,
                   X509.certSignatureAlg = sigAlg,
                   X509.certIssuerDN = dn,
-                  X509.certValidity = (HG.timeAdd now (HG.Hours (-24)), later), 
+                  X509.certValidity = (HG.timeAdd now (HG.Hours (-24)), later),
                   X509.certSubjectDN = dn,
                   X509.certPubKey = X509.PubKeyRSA pk,
                   X509.certExtensions = X509.Extensions Nothing
@@ -260,7 +260,7 @@ data Options = Options {
     optStunHost :: !String,
     optStunPort :: !Net.PortNumber,
 
-    optHeaders :: ![String], 
+    optHeaders :: ![String],
 
     -- Basic authentication options
     optAuthentication :: !Bool,
@@ -296,7 +296,7 @@ defOptions = Options {
     optUserName = fromString "guest",
     optPassword = BS.empty,
     optHTTPS = False, --True,
-    optHost = "localhost", 
+    optHost = "localhost",
     optCertificate = "",
     optKeyFile = "",
     optAllowUploads = False,
@@ -305,49 +305,49 @@ defOptions = Options {
 
 options :: [OptDescr (Options -> Options)]
 options = [
-    Option "p" ["port"] (ReqArg (\p opt -> opt { optPort = read p }) "NUM") 
+    Option "p" ["port"] (ReqArg (\p opt -> opt { optPort = read p }) "NUM")
         ("Port to listen on. (Default: " ++ (show $ optPort defOptions) ++ ")"),
-    Option "h?" ["help", "version"] (NoArg (\opt -> opt { optHelp = True })) 
+    Option "h?" ["help", "version"] (NoArg (\opt -> opt { optHelp = True }))
         "Print usage.",
-    Option "V" ["verbose"] (NoArg (\opt -> opt { optVerbose = True })) 
+    Option "V" ["verbose"] (NoArg (\opt -> opt { optVerbose = True }))
         "Print diagnostic output.",
-    Option "q" ["quiet"] (NoArg (\opt -> opt { optQuiet = True })) 
+    Option "q" ["quiet"] (NoArg (\opt -> opt { optQuiet = True }))
         "Only output access log information.",
-    Option "l" ["local"] (NoArg (\opt -> opt { optLocalOnly = True })) 
+    Option "l" ["local"] (NoArg (\opt -> opt { optLocalOnly = True }))
         "Only accept connections from localhost.",
-    Option "" ["no-stun"] (NoArg (\opt -> opt { optGetIP = False })) 
+    Option "" ["no-stun"] (NoArg (\opt -> opt { optGetIP = False }))
         "Don't attempt to get the public IP via STUN.",
-    Option "" ["stun-host"] (ReqArg (\h opt -> opt { optStunHost = h }) "URL") 
+    Option "" ["stun-host"] (ReqArg (\h opt -> opt { optStunHost = h }) "URL")
         ("Stun host. (Default: \"" ++ optStunHost defOptions ++ "\")"),
-    Option "" ["stun-port"] (ReqArg (\p opt -> opt { optStunPort = read p }) "PORT") 
+    Option "" ["stun-port"] (ReqArg (\p opt -> opt { optStunPort = read p }) "PORT")
         ("Stun port. Usually 3478. (Default: " ++ show (optStunPort defOptions) ++ ")"),
-    Option "d" ["dev-mode"] (NoArg (\opt -> opt { optGetIP = False, optLocalOnly = True, optAuthentication = False, optHTTPS = False })) 
+    Option "d" ["dev-mode"] (NoArg (\opt -> opt { optGetIP = False, optLocalOnly = True, optAuthentication = False, optHTTPS = False }))
         "Equivalent to --local --no-auth --no-https --no-stun.",
-    Option "P" ["public"] (NoArg (\opt -> opt { optAuthentication = False, optHTTPS = False })) 
+    Option "P" ["public"] (NoArg (\opt -> opt { optAuthentication = False, optHTTPS = False }))
         "Equivalent to --no-auth --no-https.",
     Option "X" [] (ReqArg (\h opt -> opt { optHeaders = h : optHeaders opt }) "HEADER")
         "Add HEADER to all server responses.",
-    Option "z" ["gzip", "compress"] (NoArg (\opt -> opt { optCompress = True })) 
+    Option "z" ["gzip", "compress"] (NoArg (\opt -> opt { optCompress = True }))
         "Enable compression. (Default)",
-    Option "" ["no-compress"] (NoArg (\opt -> opt { optCompress = False })) 
+    Option "" ["no-compress"] (NoArg (\opt -> opt { optCompress = False }))
         "Disable compression.",
-    Option "" ["no-listings"] (NoArg (\opt -> opt { optDirectoryListings = False })) 
+    Option "" ["no-listings"] (NoArg (\opt -> opt { optDirectoryListings = False }))
         "Don't list directory contents.",
-    Option "" ["no-auth"] (NoArg (\opt -> opt { optAuthentication = False })) 
+    Option "" ["no-auth"] (NoArg (\opt -> opt { optAuthentication = False }))
         "Don't require a password.",
-    Option "r" ["realm"] (ReqArg (\r opt -> opt { optRealm = r }) "REALM") 
+    Option "r" ["realm"] (ReqArg (\r opt -> opt { optRealm = r }) "REALM")
         "Set the authentication realm. (Default: \"\")",
-    Option "" ["password"] (ReqArg (\pw opt -> opt { optPassword = fromString pw }) "PASSWORD") 
+    Option "" ["password"] (ReqArg (\pw opt -> opt { optPassword = fromString pw }) "PASSWORD")
         "Require the given password. (Default: generated)",
-    Option "u" ["username"] (ReqArg (\u opt -> opt { optUserName = fromString u }) "USERNAME") 
+    Option "u" ["username"] (ReqArg (\u opt -> opt { optUserName = fromString u }) "USERNAME")
         ("Require the given username. (Default: " ++ show (optUserName defOptions)  ++ ")"),
     {-
-    Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True })) 
-        "Enable HTTPS. (Default)", 
-    Option "" ["no-https"] (NoArg (\opt -> opt { optHTTPS = False })) 
-        "Disable HTTPS.", 
+    Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True }))
+        "Enable HTTPS. (Default)",
+    Option "" ["no-https"] (NoArg (\opt -> opt { optHTTPS = False }))
+        "Disable HTTPS.",
     -}
-    Option "H" ["host"] (ReqArg (\host opt -> opt { optHost = host }) "HOST") 
+    Option "H" ["host"] (ReqArg (\host opt -> opt { optHost = host }) "HOST")
         ("Host name to use for generated certificate. (Default: " ++ show (optHost defOptions) ++ ")"),
     Option "" ["certificate"] (ReqArg (\f opt -> opt { optCertificate = f, optHTTPS = True }) "FILE")
         "The path to the server certificate.",
@@ -357,7 +357,7 @@ options = [
         "Allow files to be uploaded.",
     Option "U" ["upload-only"] (NoArg (\opt -> opt { optUploadOnly = True }))
         "Only serve an upload form and do not serve any files.",
-    Option "" ["overwrite"] (ReqArg (\overwriteOption opt -> opt { optOverwriteOption = read overwriteOption }) 
+    Option "" ["overwrite"] (ReqArg (\overwriteOption opt -> opt { optOverwriteOption = read overwriteOption })
                                     (show Overwrite++","++show ErrorOnOverwrite++","++show RenameOnOverwrite))
         ("Policy when uploaded file name conflicts with existing file name. (Default: \"" ++ show (optOverwriteOption defOptions) ++ "\")")
  ]
@@ -382,7 +382,7 @@ app404 :: Application
 app404 req k = k (responseLBS status404 [] (fromString "File Not Found"))
 
 explodeHostAddress :: Net.HostAddress -> [Word8]
-explodeHostAddress h = [fromIntegral h, 
+explodeHostAddress h = [fromIntegral h,
                         fromIntegral (h `unsafeShiftR` 8),
                         fromIntegral (h `unsafeShiftR` 16),
                         fromIntegral (h `unsafeShiftR` 24)]
@@ -396,13 +396,13 @@ base32Encode :: BS.ByteString -> BS.ByteString
 base32Encode = let table = fromString "0123456789abcdefghijklmnopqrstuv"
                    go i | i == 0 = Nothing
                         | otherwise = Just (BS.index table (fromIntegral (i .&. 0x1F)), i `unsafeShiftR` 5)
-    in \bs -> fst $ BS.unfoldrN 13 go $ BS.foldl' (\a w -> a*256 + fromIntegral w) (0 :: Integer) bs 
+    in \bs -> fst $ BS.unfoldrN 13 go $ BS.foldl' (\a w -> a*256 + fromIntegral w) (0 :: Integer) bs
 
 serve :: Options -> String -> IO ()
 serve (Options { optHelp = True }) _ = putStrLn $ usageInfo usageHeader options
 serve opts dir = do
     now <- HG.dateCurrent
-    g <- getSystemDRG 
+    g <- getSystemDRG
     let (prePW, g') = randomBytesGenerate 8 g -- generate 8 random bytes for the password if needed
         (stunTID, g'') = randomBytesGenerate 12 g' -- generate 12 random bytes for STUN Transaction ID
         pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
@@ -411,7 +411,7 @@ serve opts dir = do
         Just err -> hPutStrLn stderr err
         Nothing -> do
             when (not $ optQuiet opts) $ do
-                putStr "Private Address: " 
+                putStr "Private Address: "
                 if optLocalOnly opts then do
                     putStrLn (prettyAddress (optHTTPS opts) [127,0,0,1] (optPort opts))
                   else do
@@ -422,9 +422,9 @@ serve opts dir = do
                 when (optGetIP opts && not (optLocalOnly opts)) $ do
                     mip <- doStun opts (BS.unpack stunTID)
                     case mip of
-                        Nothing -> hPutStrLn stderr "Finding public IP failed." 
-                        Just ip -> do 
-                            putStr "Public Address: " 
+                        Nothing -> hPutStrLn stderr "Finding public IP failed."
+                        Just ip -> do
+                            putStr "Public Address: "
                             putStrLn (prettyAddress (optHTTPS opts) ip (optPort opts))
 
                 when (optAuthentication opts && not (BS.null (optUserName opts))) $
@@ -436,8 +436,8 @@ serve opts dir = do
             runner now g''
                 $ enableIf (optVerbose opts) logStdout
                 $ enableIf (optLocalOnly opts) (local (responseLBS status403 [] LBS.empty))
-                $ enableIf (optAuthentication opts) 
-                    (basicAuth (\u p -> return $ optUserName opts == u && pw == p) 
+                $ enableIf (optAuthentication opts)
+                    (basicAuth (\u p -> return $ optUserName opts == u && pw == p)
                                (fromString $ optRealm opts))
                 $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
                 $ enableIf (not (null headers)) (addHeaders headers)
@@ -445,7 +445,7 @@ serve opts dir = do
                 $ (if optUploadOnly opts then uploadForm opts policy else staticPolicy policy)
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)
                 $ app404
-  where runner now g | optHTTPS opts && certProvided 
+  where runner now g | optHTTPS opts && certProvided
                         = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
                      -- | optHTTPS opts = \app -> do
                      --    when (not $ optQuiet opts) $ do
@@ -453,8 +453,8 @@ serve opts dir = do
                      --        putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
                      --    Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
                      | otherwise = Warp.run (optPort opts)
-            where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) { 
-                        Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") } 
+            where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) {
+                        Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }
                   -- (tlsMemSettings, _) = generateCert opts now g
                   certProvided = not (null (optCertificate opts)) && not (null (optKeyFile opts))
 
