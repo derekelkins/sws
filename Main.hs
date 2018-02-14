@@ -18,7 +18,7 @@ import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificat
 import System.Environment ( getArgs ) -- base
 import System.FilePath ( makeRelative, (</>) ) -- filepath
 import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr ) -- base
-import System.IO.Error ( catchIOError ) -- base
+import System.IO.Error ( userError, ioError, catchIOError ) -- base
 import Network.HTTP.Types.Status ( status200, status403, status404 ) -- http-types
 import Network.HTTP.Types.Method ( methodPost ) -- http-types
 import Network.Wai ( Application, Middleware, requestMethod, rawPathInfo, responseLBS ) -- wai
@@ -67,28 +67,29 @@ vERSION = "0.4.1.0"
 
 -- STUN code
 
-sendStun :: Options -> Net.Socket -> IO ()
-sendStun opts s = do
+sendStun :: Options -> [Word8] -> Net.Socket -> IO ()
+sendStun opts tId s = do -- TODO: Perhaps add check that length tId == 12
     [stunAddr] <- fmap (take 1 . hostAddresses) (getHostByName (optStunHost opts)) -- TODO: maybe have an option to list all addresses
     Net.sendTo s bytes (Net.SockAddrInet (optStunPort opts) stunAddr) >> return ()
-  where bytes = BS.pack [0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
-                         0x21, 0x12, 0xA4, 0x42, -- Magic Cookie
-                         0x00, 0x00, 0x00, 0x00, -- Transaction ID (should be cryptographically random
-                         0x00, 0x00, 0x00, 0x00, -- and unique, but who cares?)
-                         0x00, 0x00, 0x00, 0x00]
+  where bytes = BS.pack ([0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
+                          0x21, 0x12, 0xA4, 0x42] -- Magic Cookie
+                         ++ tId) -- Transaction ID (should be cryptographically random and unique)
     
-recvStun :: Net.Socket -> IO [Word8]
-recvStun s = do -- Assuming successful XOR-MAPPED-ADDRESS response.  See RFC5389. TODO: Don't assume so much.
+recvStun :: [Word8] -> Net.Socket -> IO [Word8]
+recvStun tId s = do -- Assuming successful XOR-MAPPED-ADDRESS response.  See RFC5389. TODO: Don't assume so much.
     (bytes, addr) <- Net.recvFrom s 576
+    -- TODO: Check for error, then, if successful, check for XOR-MAPPED-ADDRESS response type and appropriate length.
+    let tId' = BS.unpack $ BS.take 12 $ BS.drop 8 bytes
+    when (tId /= tId') $ ioError (userError "Mismatched Transaction ID in STUN response.")
     let [b0, b1, b2, b3] = BS.unpack $ BS.drop 28 bytes
     return [b0 `xor` 0x21, b1 `xor` 0x12, b2 `xor` 0xA4, b3 `xor` 0x42]
     
-doStun :: Options -> IO (Maybe [Word8]) -- TODO: add bracket
-doStun opts = do
+doStun :: Options -> [Word8] -> IO (Maybe [Word8]) -- TODO: add bracket
+doStun opts tId = do
     s <- Net.socket Net.AF_INET Net.Datagram Net.defaultProtocol
     v <- newEmptyMVar
-    forkIO (recvStun s >>= putMVar v)
-    sendStun opts s
+    forkIO (recvStun tId s >>= putMVar v)
+    sendStun opts tId s
     threadDelay 1000000 -- wait a second
     Net.close s
     tryTakeMVar v
@@ -364,6 +365,7 @@ serve opts dir = do
     now <- HG.dateCurrent
     g <- getSystemDRG 
     let (prePW, g') = randomBytesGenerate 8 g -- generate 8 random bytes for the password if needed
+        (stunTID, g'') = randomBytesGenerate 12 g'
         pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
         headers = map ((\(x,y) -> (x, BS.drop 2 y)) . BS.breakSubstring (fromString ": ") . fromString) (optHeaders opts)
     case validateOptions opts of
@@ -379,7 +381,7 @@ serve opts dir = do
                     forM_ addrs $ \ip -> putStrLn (prettyAddress (optHTTPS opts) (explodeHostAddress ip) (optPort opts))
 
                 when (optGetIP opts && not (optLocalOnly opts)) $ do
-                    mip <- doStun opts
+                    mip <- doStun opts (BS.unpack stunTID)
                     case mip of
                         Nothing -> hPutStrLn stderr "Finding public IP failed." 
                         Just ip -> do 
@@ -392,7 +394,7 @@ serve opts dir = do
                     putStrLn $ "Generated password is: " ++ CBS.unpack pw
                     putStrLn "Use --no-auth if password protection is not desired."
 
-            runner now g'
+            runner now g''
                 $ enableIf (optVerbose opts) logStdout
                 $ enableIf (optLocalOnly opts) (local (responseLBS status403 [] LBS.empty))
                 $ enableIf (optAuthentication opts) 
