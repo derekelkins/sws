@@ -192,8 +192,8 @@ errorOnOverwriteFile src tgt = do -- TODO: This has a race condition.
 renameOnOverwriteFile :: String -> String -> IO ()
 renameOnOverwriteFile src tgt = do
     (tgt, h) <- openBinaryTempFileWithDefaultPermissions (takeDirectory tgt) (takeFileName tgt)
-    copyFile src tgt
     hClose h
+    copyFile src tgt
 
 -- Directory listing
 
