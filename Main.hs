@@ -14,10 +14,10 @@ import Data.List ( sort ) -- base
 import Data.Monoid ( (<>) ) -- base
 import Data.String ( fromString ) -- base
 import System.Console.GetOpt ( getOpt, usageInfo, OptDescr(..), ArgDescr(..), ArgOrder(..) ) -- base
-import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, copyFile  ) -- directory
+import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, copyFile, doesFileExist ) -- directory
 import System.Environment ( getArgs ) -- base
-import System.FilePath ( makeRelative, (</>) ) -- filepath
-import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr ) -- base
+import System.FilePath ( makeRelative, (</>), takeDirectory, takeFileName ) -- filepath
+import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr, hClose, openBinaryTempFileWithDefaultPermissions ) -- base
 import System.IO.Error ( userError, ioError, catchIOError ) -- base
 import Network.HTTP.Types.Status ( status200, status403, status404 ) -- http-types
 import Network.HTTP.Types.Method ( methodPost ) -- http-types
@@ -161,8 +161,8 @@ generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM
 
 -- File upload
 
-update :: Options -> Policy -> Middleware
-update opts policy app req k = do
+update :: Options -> Policy -> (String -> String -> IO ()) -> Middleware
+update opts policy copyFileFn app req k = do
     when (requestMethod req == methodPost) $ do
         runResourceT $ do
             (_, fs) <- withInternalState (\s -> parseRequestBody (tempFileBackEnd s) req)
@@ -175,9 +175,25 @@ update opts policy app req k = do
                     Just tgt -> do
                         let src = fileContent f
                         when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
-                        -- TODO: copyFile simply overwrites the target file if it exists. Allow for other policies.
-                        copyFile src tgt
+                        copyFileFn src tgt
     app req k -- We execute the next Application regardless so that we return a listing after the POST completes.
+
+overwriteFile :: String -> String -> IO ()
+overwriteFile = copyFile
+
+errorOnOverwriteFile :: String -> String -> IO ()
+errorOnOverwriteFile src tgt = do -- TODO: This has a race condition.
+    exists <- doesFileExist tgt
+    if exists then do
+        ioError $ userError "Attempting to overwrite an existing file."
+      else do
+        copyFile src tgt
+
+renameOnOverwriteFile :: String -> String -> IO ()
+renameOnOverwriteFile src tgt = do
+    (tgt, h) <- openBinaryTempFileWithDefaultPermissions (takeDirectory tgt) (takeFileName tgt)
+    copyFile src tgt
+    hClose h
 
 -- Directory listing
 
@@ -209,39 +225,58 @@ uploadForm opts policy app req k = do
 
 -- Option handling
 
+data OverwriteOption = Overwrite | ErrorOnOverwrite | RenameOnOverwrite
+
+instance Show OverwriteOption where
+    show Overwrite = "allow"
+    show ErrorOnOverwrite = "error"
+    show RenameOnOverwrite = "rename"
+
+instance Read OverwriteOption where
+    readsPrec _ ('a':'l':'l':'o':'w':s) = [(Overwrite, s)]
+    readsPrec _ ('e':'r':'r':'o':'r':s) = [(ErrorOnOverwrite, s)]
+    readsPrec _ ('r':'e':'n':'a':'m':'e':s) = [(RenameOnOverwrite, s)]
+    readsPrec _ _ = []
+
+overwritePolicy :: OverwriteOption -> String -> String -> IO ()
+overwritePolicy Overwrite = overwriteFile
+overwritePolicy ErrorOnOverwrite = errorOnOverwriteFile
+overwritePolicy RenameOnOverwrite = renameOnOverwriteFile
+
 data Options = Options {
-    optPort :: Int,
+    optPort :: !Int,
 
-    optHelp :: Bool,
-    optVerbose :: Bool,
-    optQuiet :: Bool,
+    optHelp :: !Bool,
+    optVerbose :: !Bool,
+    optQuiet :: !Bool,
 
-    optCompress :: Bool,
+    optCompress :: !Bool,
 
-    optDirectoryListings :: Bool,
+    optDirectoryListings :: !Bool,
 
-    optLocalOnly :: Bool,
+    optLocalOnly :: !Bool,
 
-    optGetIP :: Bool,
-    optStunHost :: String,
-    optStunPort :: Net.PortNumber,
+    optGetIP :: !Bool,
+    optStunHost :: !String,
+    optStunPort :: !Net.PortNumber,
 
-    optHeaders :: [String], 
+    optHeaders :: ![String], 
 
     -- Basic authentication options
-    optAuthentication :: Bool,
-    optRealm :: String,
-    optUserName :: BS.ByteString, -- some default could be chosen
-    optPassword :: BS.ByteString, -- maybe we could generate and display one rather than requiring this
+    optAuthentication :: !Bool,
+    optRealm :: !String,
+    optUserName :: !BS.ByteString, -- some default could be chosen
+    optPassword :: !BS.ByteString, -- maybe we could generate and display one rather than requiring this
 
     -- HTTPS options
-    optHTTPS :: Bool,
-    optHost :: String,
-    optCertificate :: FilePath,
-    optKeyFile :: FilePath,
+    optHTTPS :: !Bool,
+    optHost :: !String,
+    optCertificate :: !FilePath,
+    optKeyFile :: !FilePath,
 
-    optAllowUploads :: Bool,
-    optUploadOnly :: Bool}
+    optAllowUploads :: !Bool,
+    optUploadOnly :: !Bool,
+    optOverwriteOption :: !OverwriteOption}
 
 defOptions :: Options
 defOptions = Options {
@@ -265,7 +300,8 @@ defOptions = Options {
     optCertificate = "",
     optKeyFile = "",
     optAllowUploads = False,
-    optUploadOnly = False}
+    optUploadOnly = False,
+    optOverwriteOption = ErrorOnOverwrite}
 
 options :: [OptDescr (Options -> Options)]
 options = [
@@ -320,7 +356,10 @@ options = [
     Option "w" ["allow-uploads", "writable"] (NoArg (\opt -> opt { optAllowUploads = True }))
         "Allow files to be uploaded.",
     Option "U" ["upload-only"] (NoArg (\opt -> opt { optUploadOnly = True }))
-        "Only serve an upload form and do not serve any files."
+        "Only serve an upload form and do not serve any files.",
+    Option "" ["overwrite"] (ReqArg (\overwriteOption opt -> opt { optOverwriteOption = read overwriteOption }) 
+                                    (show Overwrite++","++show ErrorOnOverwrite++","++show RenameOnOverwrite))
+        ("Policy when uploaded file name conflicts with existing file name. (Default: \"" ++ show (optOverwriteOption defOptions) ++ "\")")
  ]
 
 -- TODO: KeyFile w/o Certificate and vice-versa, KeyFile/Certificate without HTTPS,
@@ -365,7 +404,7 @@ serve opts dir = do
     now <- HG.dateCurrent
     g <- getSystemDRG 
     let (prePW, g') = randomBytesGenerate 8 g -- generate 8 random bytes for the password if needed
-        (stunTID, g'') = randomBytesGenerate 12 g'
+        (stunTID, g'') = randomBytesGenerate 12 g' -- generate 12 random bytes for STUN Transaction ID
         pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
         headers = map ((\(x,y) -> (x, BS.drop 2 y)) . BS.breakSubstring (fromString ": ") . fromString) (optHeaders opts)
     case validateOptions opts of
@@ -402,7 +441,7 @@ serve opts dir = do
                                (fromString $ optRealm opts))
                 $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
                 $ enableIf (not (null headers)) (addHeaders headers)
-                $ enableIf (optAllowUploads opts || optUploadOnly opts) (update opts policy)
+                $ enableIf (optAllowUploads opts || optUploadOnly opts) (update opts policy (overwritePolicy (optOverwriteOption opts)))
                 $ (if optUploadOnly opts then uploadForm opts policy else staticPolicy policy)
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)
                 $ app404
