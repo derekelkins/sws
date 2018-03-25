@@ -12,7 +12,7 @@ Often such conflicts are largely resolvable.  For example, requiring a password 
 making a password or a certificate are inconvenient, so `sws` can generate these. *Currently, support for generating
 a certificate is removed.*
 
-### Use-case 1: xkcd scenario
+### Use-case 1: Large file transfer
     
 You want to send a large file to someone.  You browse to the directory containing it, type "`sws`", and give them
 your public IP.  They browse to it and download.  Maybe they are the ones sending the file, but aren't "technical".
