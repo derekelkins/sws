@@ -1,8 +1,9 @@
 module Main where
 import Control.Applicative ( liftA2 ) -- base
+import Control.Exception ( catch ) -- base
 import Control.Monad ( when ) -- base
 import Control.Monad.IO.Class ( liftIO ) -- transformers
-import Control.Monad.Trans.Resource ( withInternalState, runResourceT ) -- resourcet
+import Control.Monad.Trans.Resource ( withInternalState, runResourceT, ResourceCleanupException ) -- resourcet
 import qualified Data.ByteString as BS -- bytestring
 import qualified Data.ByteString.Char8 as CBS -- bytestring
 import qualified Data.ByteString.Lazy as LBS -- bytestring
@@ -14,7 +15,7 @@ import Data.List ( sort ) -- base
 import Data.Monoid ( (<>) ) -- base
 import Data.String ( fromString ) -- base
 import System.Console.GetOpt ( getOpt, usageInfo, OptDescr(..), ArgDescr(..), ArgOrder(..) ) -- base
-import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, copyFile, doesFileExist ) -- directory
+import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, renameFile, doesFileExist ) -- directory
 import System.Environment ( getArgs ) -- base
 import System.FilePath ( makeRelative, (</>), takeDirectory, takeFileName ) -- filepath
 import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr, hClose, openBinaryTempFileWithDefaultPermissions ) -- base
@@ -30,7 +31,7 @@ import Network.Wai.Middleware.HttpAuth ( basicAuth, AuthSettings ) -- wai-extra
 import Network.Wai.Middleware.Local ( local ) -- wai-extra
 import Network.Wai.Middleware.RequestLogger ( logStdout ) -- wai-extra
 import Network.Wai.Middleware.Static ( staticPolicy, addBase, isNotAbsolute, noDots, Policy, tryPolicy ) -- wai-middleware-static
-import Network.Wai.Parse ( tempFileBackEnd, parseRequestBody, fileName, fileContent ) -- wai-extra
+import Network.Wai.Parse ( tempFileBackEndOpts, parseRequestBody, fileName, fileContent ) -- wai-extra
 
 import Crypto.Random ( getSystemDRG, randomBytesGenerate, SystemDRG ) -- cryptonite
 
@@ -63,7 +64,7 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.4.1.0"
+vERSION = "0.4.2.0"
 
 -- STUN code
 
@@ -165,24 +166,28 @@ update :: Options -> Policy -> (String -> String -> IO ()) -> Middleware
 update opts policy copyFileFn app req k = do
     if requestMethod req == methodPost then (do
         runResourceT $ do
-            (_, fs) <- withInternalState (\s -> parseRequestBody (tempFileBackEnd s) req)
-            -- If UploadOnly then ignore the path part of the URL, i.e. only write the file to the base directory.
             let prefix = if optUploadOnly opts then "" else CBS.unpack (BS.tail (rawPathInfo req))
-            liftIO $ when (optVerbose opts) $ putStrLn (CBS.unpack (BS.tail (rawPathInfo req)))
-            liftIO $ forM_ fs $ \(_, f) ->
-                case tryPolicy policy (prefix </> CBS.unpack (fileName f)) of
-                    Nothing -> return ()
-                    Just tgt -> do
-                        let src = fileContent f
-                        when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
-                        copyFileFn src tgt
+            case tryPolicy policy prefix of
+                Nothing -> liftIO $ ioError $ userError "Forbidden" -- TODO: k (responseLBS status403 [] (LBS.fromChunks [CBS.pack "Forbidden"]))
+                Just tgtDir -> do
+                    liftIO $ when (optVerbose opts) $ putStrLn (CBS.unpack (BS.tail (rawPathInfo req)))
+                    (_, fs) <- withInternalState (\s -> parseRequestBody (tempFileBackEndOpts (return tgtDir) ".sws.tmp" s) req)
+                    -- If UploadOnly then ignore the path part of the URL, i.e. only write the file to the base directory.
+                    liftIO $ forM_ fs $ \(_, f) ->
+                        case tryPolicy policy (prefix </> CBS.unpack (fileName f)) of
+                            Nothing -> return ()
+                            Just tgt -> do
+                                let src = fileContent f
+                                when (optVerbose opts) $ putStrLn ("Saving " ++ src ++ " to " ++ tgt)
+                                copyFileFn src tgt
         app req k) -- We execute the next Application regardless so that we return a listing after the POST completes.
+          `catch` (\e -> const (app req k) (e :: ResourceCleanupException)) -- HACK: tempFileBackEndOpts attempts to remove the temp file but we've already removed it.
           `catchIOError` \e -> if isUserError e then k (responseLBS status409 [] (LBS.fromChunks [CBS.pack $ ioeGetErrorString e])) else ioError e
       else
         app req k
 
 overwriteFile :: String -> String -> IO ()
-overwriteFile = copyFile
+overwriteFile = renameFile -- copyFile
 
 errorOnOverwriteFile :: String -> String -> IO ()
 errorOnOverwriteFile src tgt = do -- TODO: This has a race condition.
@@ -190,13 +195,13 @@ errorOnOverwriteFile src tgt = do -- TODO: This has a race condition.
     if exists then do
         ioError $ userError "Attempting to overwrite an existing file."
       else do
-        copyFile src tgt
+        renameFile src tgt
 
 renameOnOverwriteFile :: String -> String -> IO ()
 renameOnOverwriteFile src tgt = do
     (tgt, h) <- openBinaryTempFileWithDefaultPermissions (takeDirectory tgt) (takeFileName tgt)
     hClose h
-    copyFile src tgt
+    renameFile src tgt
 
 -- Directory listing
 
