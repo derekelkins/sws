@@ -1,4 +1,7 @@
-resolver: lts-11.4
+resolver: lts-12.9
 
 packages:
   - .
+
+extra-deps:
+  - network-2.8.0.0
