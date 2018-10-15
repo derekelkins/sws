@@ -31,6 +31,7 @@ import Network.Wai.Middleware.HttpAuth ( basicAuth, AuthSettings ) -- wai-extra
 import Network.Wai.Middleware.Local ( local ) -- wai-extra
 import Network.Wai.Middleware.RequestLogger ( logStdout ) -- wai-extra
 import Network.Wai.Middleware.Static ( staticPolicy, addBase, isNotAbsolute, noDots, Policy, tryPolicy ) -- wai-middleware-static
+import Network.Wai.Middleware.StripHeaders ( stripHeadersIf ) -- wai-extra
 import Network.Wai.Parse ( tempFileBackEndOpts, parseRequestBody, fileName, fileContent ) -- wai-extra
 
 import Crypto.Random ( getSystemDRG, randomBytesGenerate, SystemDRG ) -- cryptonite
@@ -448,7 +449,7 @@ serve opts dir = do
                     (basicAuth (\u p -> return $ optUserName opts == u && pw == p)
                                (fromString $ optRealm opts))
                 $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
-                $ enableIf (not (null headers)) (addHeaders headers)
+                $ enableIf (not (null headers)) (addHeaders headers . stripHeadersIf (map fst headers) (const True))
                 $ enableIf (optAllowUploads opts || optUploadOnly opts) (update opts policy (overwritePolicy (optOverwriteOption opts)))
                 $ (if optUploadOnly opts then uploadForm opts policy else staticPolicy policy)
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)
