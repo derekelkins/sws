@@ -1,10 +1,14 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
-## 0.4.2.0 - 2018-09-15
+## 0.4.3.0 - 2018-09-15
 ### Changed
 - Upper bound bumps.
 - Using -X to add headers will remove headers added by default. Before it would lead to duplicate headers.
+
+## 0.4.2.0 - 2018-06-01
+### Changed
+- Store uploaded files directly in target directory rather than first uploading to a temp directory then copying.
 
 ## 0.4.1.0 - 2018-02-14
 ### Added

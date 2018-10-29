@@ -65,7 +65,7 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.4.2.0"
+vERSION = "0.4.3.0"
 
 -- STUN code
 
