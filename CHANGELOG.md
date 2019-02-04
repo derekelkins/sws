@@ -1,6 +1,10 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.4.4.0 - 2019-02-04
+### Changed
+- Unescape URIs before generating directory listings.
+
 ## 0.4.3.0 - 2018-09-15
 ### Changed
 - Upper bound bumps.

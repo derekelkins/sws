@@ -22,6 +22,7 @@ import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr, hClose, openBinaryTempF
 import System.IO.Error ( userError, ioError, catchIOError, isUserError, ioeGetErrorString ) -- base
 import Network.HTTP.Types.Status ( status200, status403, status404, status409 ) -- http-types
 import Network.HTTP.Types.Method ( methodPost ) -- http-types
+import Network.URI ( unEscapeString ) -- network-uri
 import Network.Wai ( Application, Middleware, requestMethod, rawPathInfo, responseLBS ) -- wai
 import qualified Network.Wai.Handler.Warp as Warp -- warp
 import qualified Network.Wai.Handler.WarpTLS as Warp -- warp-tls
@@ -65,7 +66,7 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.4.3.0"
+vERSION = "0.4.4.0"
 
 -- STUN code
 
@@ -209,7 +210,7 @@ renameOnOverwriteFile src tgt = do
 -- TODO: Make this less fugly.
 directoryListing :: Options -> FilePath -> Middleware -- TODO: Handle exceptions.  Note, this isn't critical.  It will carry on.
 directoryListing opts baseDir app req k = do
-    let path = baseDir </> CBS.unpack (BS.tail $ rawPathInfo req) -- TODO: This unpack is ugly.
+    let path = baseDir </> unEscapeString (CBS.unpack (BS.tail $ rawPathInfo req)) -- TODO: This unpack is ugly.
     b <- doesDirectoryExist path
     if not b then app req k else do
         when (optVerbose opts) $ putStrLn $ "Rendering listing for " ++ path
