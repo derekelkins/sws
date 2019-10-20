@@ -1,6 +1,10 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.4.5.0 - 2019-10-14
+### Added
+- `--content-type` option to override content types for a given file extension.
+
 ## 0.4.4.0 - 2019-02-04
 ### Changed
 - Unescape URIs before generating directory listings.

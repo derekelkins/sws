@@ -8,16 +8,18 @@ import qualified Data.ByteString as BS -- bytestring
 import qualified Data.ByteString.Char8 as CBS -- bytestring
 import qualified Data.ByteString.Lazy as LBS -- bytestring
 import Data.Bits ( (.&.), unsafeShiftR, xor ) -- base
+import Data.Char ( toLower ) -- base
 import Data.Foldable ( forM_ ) -- base
 import Data.Int ( Int64 ) -- base
 import Data.Word ( Word8 ) -- base
 import Data.List ( sort ) -- base
+import qualified Data.Map as M -- containers
 import Data.Monoid ( (<>) ) -- base
 import Data.String ( fromString ) -- base
 import System.Console.GetOpt ( getOpt, usageInfo, OptDescr(..), ArgDescr(..), ArgOrder(..) ) -- base
 import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, renameFile, doesFileExist ) -- directory
 import System.Environment ( getArgs ) -- base
-import System.FilePath ( makeRelative, (</>), takeDirectory, takeFileName ) -- filepath
+import System.FilePath ( makeRelative, (</>), takeDirectory, takeExtension, takeFileName ) -- filepath
 import System.IO ( putStrLn, hPutStrLn, hPutStr, stderr, hClose, openBinaryTempFileWithDefaultPermissions ) -- base
 import System.IO.Error ( userError, ioError, catchIOError, isUserError, ioeGetErrorString ) -- base
 import Network.HTTP.Types.Status ( status200, status403, status404, status409 ) -- http-types
@@ -31,7 +33,8 @@ import Network.Wai.Middleware.Gzip ( gzip, gzipFiles, def, GzipFiles(GzipIgnore,
 import Network.Wai.Middleware.HttpAuth ( basicAuth, AuthSettings ) -- wai-extra
 import Network.Wai.Middleware.Local ( local ) -- wai-extra
 import Network.Wai.Middleware.RequestLogger ( logStdout ) -- wai-extra
-import Network.Wai.Middleware.Static ( staticPolicy, addBase, isNotAbsolute, noDots, Policy, tryPolicy ) -- wai-middleware-static
+import Network.Wai.Middleware.Static ( staticPolicyWithOptions, addBase, getMimeType, isNotAbsolute, noDots, Policy, tryPolicy) -- wai-middleware-static
+import qualified Network.Wai.Middleware.Static as Static ( Options(mimeTypes), defaultOptions ) -- wai-middleware-static
 import Network.Wai.Middleware.StripHeaders ( stripHeadersIf ) -- wai-extra
 import Network.Wai.Parse ( tempFileBackEndOpts, parseRequestBody, fileName, fileContent ) -- wai-extra
 
@@ -271,6 +274,7 @@ data Options = Options {
     optStunPort :: !Net.PortNumber,
 
     optHeaders :: ![String],
+    optContentTypeOverrides :: ![(String, String)],
 
     -- Basic authentication options
     optAuthentication :: !Bool,
@@ -286,7 +290,7 @@ data Options = Options {
 
     optAllowUploads :: !Bool,
     optUploadOnly :: !Bool,
-    optOverwriteOption :: !OverwriteOption}
+    optOverwriteOption :: !OverwriteOption }
 
 defOptions :: Options
 defOptions = Options {
@@ -301,6 +305,7 @@ defOptions = Options {
     optStunHost = "stun.l.google.com",
     optStunPort = 19302 ,
     optHeaders = [],
+    optContentTypeOverrides = [],
     optAuthentication = True,
     optRealm = "",
     optUserName = fromString "guest",
@@ -337,6 +342,10 @@ options = [
         "Equivalent to --no-auth --no-https.",
     Option "X" [] (ReqArg (\h opt -> opt { optHeaders = h : optHeaders opt }) "HEADER")
         "Add HEADER to all server responses.",
+    Option "" ["content-type"] (ReqArg (\h opt -> opt {
+                                    optContentTypeOverrides = (takeWhile ('='/=) h, drop 1 (dropWhile ('='/=) h))
+                                                                : optContentTypeOverrides opt }) "CONTENT-TYPE-OVERRIDE")
+        "With argument EXT=MIME, use MIME type MIME for files with extension EXT.",
     Option "z" ["gzip", "compress"] (NoArg (\opt -> opt { optCompress = True }))
         "Enable compression. (Default)",
     Option "" ["no-compress"] (NoArg (\opt -> opt { optCompress = False }))
@@ -452,7 +461,7 @@ serve opts dir = do
                 $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
                 $ enableIf (not (null headers)) (addHeaders headers . stripHeadersIf (map fst headers) (const True))
                 $ enableIf (optAllowUploads opts || optUploadOnly opts) (update opts policy (overwritePolicy (optOverwriteOption opts)))
-                $ (if optUploadOnly opts then uploadForm opts policy else staticPolicy policy)
+                $ (if optUploadOnly opts then uploadForm opts policy else staticPolicyWithOptions staticOpts policy)
                 $ enableIf (optDirectoryListings opts) (directoryListing opts dir)
                 $ app404
   where runner now g | optHTTPS opts && certProvided
@@ -469,6 +478,9 @@ serve opts dir = do
                   certProvided = not (null (optCertificate opts)) && not (null (optKeyFile opts))
 
         policy = basePolicy <> addBase dir
+        contentTypeOverrides = M.fromList (map (\(e, m) -> (map toLower e, CBS.pack m)) $ optContentTypeOverrides opts)
+        getMimeTypes f = maybe (getMimeType f) id $ M.lookup (map toLower $ drop 1 $ takeExtension f) contentTypeOverrides
+        staticOpts = Static.defaultOptions { Static.mimeTypes = getMimeTypes }
 
 main :: IO ()
 main = do
