@@ -62,7 +62,7 @@ import Control.Concurrent ( forkIO, threadDelay ) -- base
 import Control.Concurrent.MVar ( newEmptyMVar, putMVar, tryTakeMVar ) -- base
 import qualified Network.Socket as Net hiding ( sendTo, recvFrom ) -- network
 import qualified Network.Socket.ByteString as Net ( sendTo, recvFrom ) -- network
-import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network
+import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network-bsd
 
 -- Future things: case insensitive matching, optionally add CORS headers
 -- Maybe future things: virtual hosts, caching, DELETE support, dropping permissions, client certificates
