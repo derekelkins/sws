@@ -41,21 +41,18 @@ import Network.Wai.Parse ( tempFileBackEndOpts, parseRequestBody, fileName, file
 import Crypto.Random ( getSystemDRG, randomBytesGenerate, SystemDRG ) -- cryptonite
 
 -- For certificate generation.
--- import Crypto.PubKey.RSA ( generate  ) -- crypto-pubkey
--- import Crypto.PubKey.RSA.PKCS15 ( sign ) -- crypto-pubkey
--- import Crypto.PubKey.HashDescr ( hashDescrSHA256 ) -- crypto-pubkey
--- import Data.ASN1.OID ( getObjectID ) -- asn1-types
--- import Data.ASN1.Types ( toASN1, {- for work-around -} ASN1Object ) -- asn1-types
--- import Data.ASN1.BinaryEncoding ( DER(DER) ) -- asn1-encoding
--- import Data.ASN1.Encoding ( encodeASN1' ) -- asn1-encoding
--- import qualified Data.PEM as PEM -- pem
--- import qualified Data.X509 as X509 -- x509
+import Crypto.Hash.Algorithms ( SHA256(SHA256) ) -- cryptonite
+import Crypto.PubKey.RSA ( generate  ) -- cryptonite
+import Crypto.PubKey.RSA.PKCS15 ( sign ) -- cryptonite
+import Crypto.Random.Types ( withDRG ) -- cryptonite
+import Data.ASN1.OID ( getObjectID ) -- asn1-types
+import Data.ASN1.Types ( toASN1 ) -- asn1-types
+import Data.ASN1.BinaryEncoding ( DER(DER) ) -- asn1-encoding
+import Data.ASN1.Encoding ( encodeASN1' ) -- asn1-encoding
+import qualified Data.PEM as PEM -- pem
+import qualified Data.X509 as X509 -- x509
 import qualified Data.Hourglass as HG -- hourglass
 import qualified System.Hourglass as HG -- hourglass
-
--- for work-around
--- import Data.ASN1.Types ( ASN1(..), ASN1ConstructionType(..), ASN1TimeType(..) )
--- import Data.ASN1.Types.Lowlevel ( ASN1Class(..) )
 
 -- For STUN
 import Control.Concurrent ( forkIO, threadDelay ) -- base
@@ -69,7 +66,7 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network-bsd
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.4.4.0"
+vERSION = "0.5.0.0"
 
 -- STUN code
 
@@ -111,38 +108,12 @@ rsaSizeInBytes = 256 -- Corresponds to 2048 bit encryption
 certExpiryInDays :: Int64
 certExpiryInDays = 30
 
-{-
--- Temporary work-around for bug in x509.
-newtype CertificateWorkaround = CW X509.Certificate
-    deriving ( Eq, Show )
-
-encodeCertificateHeader :: X509.Certificate -> [ASN1]
-encodeCertificateHeader cert =
-    eVer ++ eSerial ++ eAlgId ++ eIssuer ++ eValidity ++ eSubject ++ epkinfo ++ eexts
-  where eVer      = asn1Container (Container Context 0) [IntVal (fromIntegral $ X509.certVersion cert)]
-        eSerial   = [IntVal $ X509.certSerial cert]
-        eAlgId    = toASN1 (X509.certSignatureAlg cert) []
-        eIssuer   = toASN1 (X509.certIssuerDN cert) []
-        (t1, t2)  = X509.certValidity cert
-        eValidity = asn1Container Sequence [ASN1Time TimeGeneralized t1 (Just (HG.TimezoneOffset 0))
-                                           ,ASN1Time TimeGeneralized t2 (Just (HG.TimezoneOffset 0))]
-        eSubject  = toASN1 (X509.certSubjectDN cert) []
-        epkinfo   = toASN1 (X509.certPubKey cert) []
-        eexts     = toASN1 (X509.certExtensions cert) []
-        asn1Container ty l = [Start ty] ++ l ++ [End ty]
-
-instance ASN1Object CertificateWorkaround where
-    toASN1 (CW cert) = (encodeCertificateHeader cert ++)
--- End work-around code
--}
-
-{-
 generateCert :: Options -> HG.DateTime -> SystemDRG -> (Warp.TLSSettings, SystemDRG)
 generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM.pemWriteBS pemKey)) {
                                 Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }, g'')
     where later = HG.timeAdd now (HG.Hours (24*certExpiryInDays))
           (bs, g') = randomBytesGenerate 8 g -- generate 8 random bytes for the serial number
-          ((pk, sk), g'') = generate g' rsaSizeInBytes rsaPublicExponent
+          ((pk, sk), g'') = withDRG g' (generate rsaSizeInBytes rsaPublicExponent)
           serialNum = BS.foldl' (\a w -> a*256 + fromIntegral w) 0 bs
           cn = getObjectID X509.DnCommonName
           o = getObjectID X509.DnOrganization
@@ -158,12 +129,11 @@ generateCert opts now g = ((Warp.tlsSettingsMemory (PEM.pemWriteBS pemCert) (PEM
                   X509.certPubKey = X509.PubKeyRSA pk,
                   X509.certExtensions = X509.Extensions Nothing
               }
-          signFunc xs = (either (error . show) id (sign Nothing hashDescrSHA256 sk xs), sigAlg, ())
-          certBytes = X509.encodeSignedObject $ fst $ X509.objectToSignedExact signFunc (CW cert)
-          keyBytes = encodeASN1' DER (toASN1 sk [])
+          signFunc xs = (either (error . show) id (sign Nothing (Just SHA256) sk xs), sigAlg, ())
+          certBytes = X509.encodeSignedObject $ fst $ X509.objectToSignedExact signFunc cert
+          keyBytes = encodeASN1' DER (toASN1 (X509.PrivKeyRSA sk) [])
           pemCert = PEM.PEM (fromString "CERTIFICATE") [] certBytes  -- This is a mite silly.  Wrap in PEM just to immediately unwrap...
           pemKey = PEM.PEM (fromString "RSA PRIVATE KEY") [] keyBytes
--}
 
 -- File upload
 
@@ -310,7 +280,7 @@ defOptions = Options {
     optRealm = "",
     optUserName = fromString "guest",
     optPassword = BS.empty,
-    optHTTPS = False, --True,
+    optHTTPS = True,
     optHost = "localhost",
     optCertificate = "",
     optKeyFile = "",
@@ -360,12 +330,10 @@ options = [
         "Require the given password. (Default: generated)",
     Option "u" ["username"] (ReqArg (\u opt -> opt { optUserName = fromString u }) "USERNAME")
         ("Require the given username. (Default: " ++ show (optUserName defOptions)  ++ ")"),
-    {-
     Option "s" ["secure"] (NoArg (\opt -> opt { optHTTPS = True }))
         "Enable HTTPS. (Default)",
     Option "" ["no-https"] (NoArg (\opt -> opt { optHTTPS = False }))
         "Disable HTTPS.",
-    -}
     Option "H" ["host"] (ReqArg (\host opt -> opt { optHost = host }) "HOST")
         ("Host name to use for generated certificate. (Default: " ++ show (optHost defOptions) ++ ")"),
     Option "" ["certificate"] (ReqArg (\f opt -> opt { optCertificate = f, optHTTPS = True }) "FILE")
@@ -466,15 +434,15 @@ serve opts dir = do
                 $ app404
   where runner now g | optHTTPS opts && certProvided
                         = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
-                     -- | optHTTPS opts = \app -> do
-                     --    when (not $ optQuiet opts) $ do
-                     --        putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
-                     --        putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
-                     --    Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
+                     | optHTTPS opts = \app -> do
+                        when (not $ optQuiet opts) $ do
+                            putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
+                            putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
+                        Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app
                      | otherwise = Warp.run (optPort opts)
             where tlsFileSettings = (Warp.tlsSettings (optCertificate opts) (optKeyFile opts)) {
                         Warp.onInsecure = Warp.DenyInsecure (fromString "Use HTTPS") }
-                  -- (tlsMemSettings, _) = generateCert opts now g
+                  (tlsMemSettings, _) = generateCert opts now g
                   certProvided = not (null (optCertificate opts)) && not (null (optKeyFile opts))
 
         policy = basePolicy <> addBase dir

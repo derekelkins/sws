@@ -1,6 +1,10 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.5.0.0 - 2020-01-02
+### Added
+- Added back in support for self-signed certificate generation.
+
 ## 0.4.6.0 - 2019-10-20
 ### Changed
 - Upper bound bumps.

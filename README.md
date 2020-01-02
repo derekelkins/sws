@@ -9,8 +9,7 @@ the executable should have no dependencies, e.g., it does not require OpenSSL.  
 main goals.  It has no config files, and only a few, if any, easily provided command line parameters should be necessary.
 If convenience and security conflict, I'm willing to sacrifice a little convenience for security, but only a little.
 Often such conflicts are largely resolvable.  For example, requiring a password and using TLS improve security, but
-making a password or a certificate are inconvenient, so `sws` can generate these. *Currently, support for generating
-a certificate is removed.*
+making a password or a certificate are inconvenient, so `sws` can generate these.
 
 ### Use-case 1: Large file transfer
     
