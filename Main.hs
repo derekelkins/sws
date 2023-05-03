@@ -1,7 +1,7 @@
 module Main where
 import Control.Applicative ( liftA2 ) -- base
 import Control.Exception ( catch ) -- base
-import Control.Monad ( when ) -- base
+import Control.Monad ( unless, void, when ) -- base
 import Control.Monad.IO.Class ( liftIO ) -- transformers
 import Control.Monad.Trans.Resource ( withInternalState, runResourceT, ResourceCleanupException ) -- resourcet
 import qualified Data.ByteString as BS -- bytestring
@@ -10,11 +10,13 @@ import qualified Data.ByteString.Lazy as LBS -- bytestring
 import Data.Bits ( (.&.), unsafeShiftR, xor ) -- base
 import Data.Char ( toLower ) -- base
 import Data.Foldable ( forM_ ) -- base
+import Data.Function ( on ) -- base
 import Data.Int ( Int64 ) -- base
 import Data.Word ( Word8 ) -- base
-import Data.List ( sort ) -- base
+import Data.List ( sortBy ) -- base
 import qualified Data.Map as M -- containers
 import Data.Monoid ( (<>) ) -- base
+import Data.Time.Clock ( UTCTime ) -- time
 import Data.String ( fromString ) -- base
 import System.Console.GetOpt ( getOpt, usageInfo, OptDescr(..), ArgDescr(..), ArgOrder(..) ) -- base
 import System.Directory ( getDirectoryContents, doesDirectoryExist, getModificationTime, renameFile, doesFileExist ) -- directory
@@ -25,7 +27,7 @@ import System.IO.Error ( userError, ioError, catchIOError, isUserError, ioeGetEr
 import Network.HTTP.Types.Status ( status200, status403, status404, status409 ) -- http-types
 import Network.HTTP.Types.Method ( methodPost ) -- http-types
 import Network.URI ( unEscapeString ) -- network-uri
-import Network.Wai ( Application, Middleware, requestMethod, rawPathInfo, responseLBS ) -- wai
+import Network.Wai ( Application, Middleware, queryString, requestMethod, rawPathInfo, responseLBS ) -- wai
 import qualified Network.Wai.Handler.Warp as Warp -- warp
 import qualified Network.Wai.Handler.WarpTLS as Warp -- warp-tls
 import Network.Wai.Middleware.AddHeaders ( addHeaders ) -- wai-extra
@@ -66,14 +68,14 @@ import Network.BSD ( hostAddresses, getHostName, getHostByName ) -- network-bsd
 -- Not future things: CGI etc of any sort, "extensibility"
 --
 vERSION :: String
-vERSION = "0.5.0.1"
+vERSION = "0.5.2.0"
 
 -- STUN code
 
 sendStun :: Options -> [Word8] -> Net.Socket -> IO ()
 sendStun opts tId s = do -- TODO: Perhaps add check that length tId == 12
     [stunAddr] <- fmap (take 1 . hostAddresses) (getHostByName (optStunHost opts)) -- TODO: maybe have an option to list all addresses
-    Net.sendTo s bytes (Net.SockAddrInet (optStunPort opts) stunAddr) >> return ()
+    void $ Net.sendTo s bytes (Net.SockAddrInet (optStunPort opts) stunAddr)
   where bytes = BS.pack ([0x00, 0x01, 0x00, 0x00, -- Type Binding, Size 0
                           0x21, 0x12, 0xA4, 0x42] -- Magic Cookie
                          ++ tId) -- Transaction ID (should be cryptographically random and unique)
@@ -180,6 +182,16 @@ renameOnOverwriteFile src tgt = do
 
 -- Directory listing
 
+selectSorter :: [Maybe BS.ByteString] -> [(FilePath, UTCTime)] -> [(FilePath, UTCTime)]
+selectSorter [] = sortBy (compare `on` fst)
+selectSorter (Nothing:_) = selectSorter []
+selectSorter (Just v:_)
+    | v == CBS.pack "alpha-rev" = sortBy (flip compare `on` fst)
+    | v == CBS.pack "date" = sortBy (compare `on` snd)
+    | v == CBS.pack "date-rev" = sortBy (flip compare `on` snd)
+    | otherwise = selectSorter []
+
+
 -- TODO: Make this less fugly.
 directoryListing :: Options -> FilePath -> Middleware -- TODO: Handle exceptions.  Note, this isn't critical.  It will carry on.
 directoryListing opts baseDir app req k = do
@@ -187,22 +199,25 @@ directoryListing opts baseDir app req k = do
     b <- doesDirectoryExist path
     if not b then app req k else do
         when (optVerbose opts) $ putStrLn $ "Rendering listing for " ++ path
-        html <- fmap container (mapM (\p -> fileDetails p (path </> p)) =<< fmap sort (getDirectoryContents path))
+        let query = map snd $ take 1 $ filter (\(k, _) -> k == CBS.pack "sort") $ queryString req
+        let sort = selectSorter query
+        entries <- mapM (\p -> (,) p <$> getModificationTime (path </> p)) =<< getDirectoryContents path
+        html <- fmap container (mapM (\(p, d) -> fileDetails p (path </> p) d) (sort entries))
         k (responseLBS status200 [] html)
   where allowWrites = optAllowUploads opts
-        fileDetails label f = liftA2 (renderFile label f) (doesDirectoryExist f) (getModificationTime f)
+        fileDetails label f d = fmap (renderFile label f d) (doesDirectoryExist f)
                                 `catchIOError` \_ -> return (fromString "")
-        renderFile label path isDirectory modTime = LBS.concat $ map fromString [
+        renderFile label path modTime isDirectory = LBS.concat $ map fromString [
             "<tr><td>", if isDirectory then "d" else "f", "</td><td><a href=\"/", makeRelative baseDir path, "\">", label, "</a></td><td>", show modTime, "</td></tr>"
           ]
         container xs
-          = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}form { display: " ++ (if allowWrites then "inherit" else "none") ++ ";}</style></head><body><div class=\"list\"><table><tr><td></td><td>Name</td><td>Last Modified</td></tr>")
+          = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}form { display: " ++ (if allowWrites then "inherit" else "none") ++ ";}</style></head><body><div class=\"list\"><table><tr><th></th><th>Name <a href=\"?sort=alpha\">&#8593;</a><a href = \"?sort=alpha-rev\">&#8595;</a></th><th>Last Modified <a href=\"?sort=date\">&#8593;</a><a href = \"?sort=date-rev\">&#8595;</a></th></tr>")
              <> LBS.concat xs
              <> fromString ("</table></div><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
 
 uploadForm :: Options -> Policy -> Middleware
 uploadForm opts policy app req k = do
-    when (optVerbose opts) $ putStrLn $ "Rendering upload form"
+    when (optVerbose opts) $ putStrLn "Rendering upload form"
     k (responseLBS status200 [] html)
   where html = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}</style></head><body><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
 
@@ -291,7 +306,7 @@ defOptions = Options {
 options :: [OptDescr (Options -> Options)]
 options = [
     Option "p" ["port"] (ReqArg (\p opt -> opt { optPort = read p }) "NUM")
-        ("Port to listen on. (Default: " ++ (show $ optPort defOptions) ++ ")"),
+        ("Port to listen on. (Default: " ++ show (optPort defOptions) ++ ")"),
     Option "h?" ["help", "version"] (NoArg (\opt -> opt { optHelp = True }))
         "Print usage.",
     Option "V" ["verbose"] (NoArg (\opt -> opt { optVerbose = True }))
@@ -383,7 +398,7 @@ base32Encode :: BS.ByteString -> BS.ByteString
 base32Encode = let table = fromString "0123456789abcdefghijklmnopqrstuv"
                    go i | i == 0 = Nothing
                         | otherwise = Just (BS.index table (fromIntegral (i .&. 0x1F)), i `unsafeShiftR` 5)
-    in \bs -> fst $ BS.unfoldrN 13 go $ BS.foldl' (\a w -> a*256 + fromIntegral w) (0 :: Integer) bs
+    in fst . BS.unfoldrN 13 go . BS.foldl' (\a w -> a*256 + fromIntegral w) (0 :: Integer)
 
 serve :: Options -> String -> IO ()
 serve (Options { optHelp = True }) _ = putStrLn $ usageInfo usageHeader options
@@ -393,11 +408,11 @@ serve opts dir = do
     let (prePW, g') = randomBytesGenerate 8 g -- generate 8 random bytes for the password if needed
         (stunTID, g'') = randomBytesGenerate 12 g' -- generate 12 random bytes for STUN Transaction ID
         pw = if not (BS.null (optPassword opts)) then optPassword opts else base32Encode prePW
-        headers = map ((\(x,y) -> (x, BS.drop 2 y)) . BS.breakSubstring (fromString ": ") . fromString) (optHeaders opts)
+        headers = map ((\(x, y) -> (x, BS.drop 2 y)) . BS.breakSubstring (fromString ": ") . fromString) (optHeaders opts)
     case validateOptions opts of
         Just err -> hPutStrLn stderr err
         Nothing -> do
-            when (not $ optQuiet opts) $ do
+            unless (optQuiet opts) $ do
                 putStr "Private Address: "
                 if optLocalOnly opts then do
                     putStrLn (prettyAddress (optHTTPS opts) [127,0,0,1] (optPort opts))
@@ -435,7 +450,7 @@ serve opts dir = do
   where runner now g | optHTTPS opts && certProvided
                         = Warp.runTLS tlsFileSettings (Warp.setPort (optPort opts) Warp.defaultSettings)
                      | optHTTPS opts = \app -> do
-                        when (not $ optQuiet opts) $ do
+                        unless (optQuiet opts) $ do
                             putStrLn "Generating a self-signed certificate.  Use --no-https to disable HTTPS."
                             putStrLn "Users will get warnings and will be vulnerable to man-in-the-middle attacks."
                         Warp.runTLS tlsMemSettings (Warp.setPort (optPort opts) Warp.defaultSettings) app

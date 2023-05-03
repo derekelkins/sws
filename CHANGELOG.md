@@ -1,6 +1,10 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.5.2.0 - 2023-05-02
+### Added
+- Add ability to sort by file name or modification date.
+
 ## 0.5.0.1 - 2021-03-07
 ### Changed
 - Upper bound bumps.
