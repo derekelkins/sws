@@ -1,6 +1,11 @@
 # Change Log
 All notable changes to this project will be documented in this file.
 
+## 0.5.3.0 - 2024-12-27
+### Changed
+- Upper bound bumps.
+- Modified CSS to respond to dark mode preferences.
+
 ## 0.5.2.0 - 2023-05-02
 ### Changed
 - Upper bound bumps.

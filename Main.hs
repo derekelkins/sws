@@ -31,7 +31,7 @@ import Network.Wai ( Application, Middleware, queryString, requestMethod, rawPat
 import qualified Network.Wai.Handler.Warp as Warp -- warp
 import qualified Network.Wai.Handler.WarpTLS as Warp -- warp-tls
 import Network.Wai.Middleware.AddHeaders ( addHeaders ) -- wai-extra
-import Network.Wai.Middleware.Gzip ( gzip, gzipFiles, def, GzipFiles(GzipIgnore, GzipCompress) ) -- wai-extra
+import Network.Wai.Middleware.Gzip ( gzip, gzipFiles, defaultGzipSettings, GzipFiles(GzipIgnore, GzipCompress) ) -- wai-extra
 import Network.Wai.Middleware.HttpAuth ( basicAuth, AuthSettings ) -- wai-extra
 import Network.Wai.Middleware.Local ( local ) -- wai-extra
 import Network.Wai.Middleware.RequestLogger ( logStdout ) -- wai-extra
@@ -191,6 +191,8 @@ selectSorter (Just v:_)
     | v == CBS.pack "date-rev" = sortBy (flip compare `on` snd)
     | otherwise = selectSorter []
 
+styling :: String
+styling = ":root{--text-color:black;--body-bg-color:#F5F5F5;--footer-color:#787878;--list-bg-color:white;--list-border-color:#646464;--link-color:blue;--link-visited-color:#48468F;--link-hover-color:red;}@media (prefers-color-scheme:dark) {:root{--text-color:#bbb;--body-bg-color:#111;--footer-color:#787878;--list-bg-color:black;--list-border-color:#646464;--link-color:blue;--link-visited-color:#48468F;--link-hover-color:red;}}a, a:active {text-decoration: none; color: var(--link-color);}a:visited {color: var(--link-visited-color);}a:hover, a:focus {text-decoration: underline; color: var(--link-hover-color);}body {color:var(--text-color);background-color: var(--body-bg-color);}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: var(--list-bg-color); border-top: 1px solid var(--list-border-color); border-bottom: 1px solid var(--list-border-color); padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: var(--footer-color); padding-top: 4px;}"
 
 -- TODO: Make this less fugly.
 directoryListing :: Options -> FilePath -> Middleware -- TODO: Handle exceptions.  Note, this isn't critical.  It will carry on.
@@ -211,7 +213,7 @@ directoryListing opts baseDir app req k = do
             "<tr><td>", if isDirectory then "d" else "f", "</td><td><a href=\"/", makeRelative baseDir path, "\">", label, "</a></td><td>", show modTime, "</td></tr>"
           ]
         container xs
-          = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}form { display: " ++ (if allowWrites then "inherit" else "none") ++ ";}</style></head><body><div class=\"list\"><table><tr><th></th><th>Name <a href=\"?sort=alpha\">&#8593;</a><a href = \"?sort=alpha-rev\">&#8595;</a></th><th>Last Modified <a href=\"?sort=date\">&#8593;</a><a href = \"?sort=date-rev\">&#8595;</a></th></tr>")
+          = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">" ++ styling ++ "form { display: " ++ (if allowWrites then "inherit" else "none") ++ ";}</style></head><body><div class=\"list\"><table><tr><th></th><th>Name <a href=\"?sort=alpha\">&#8593;</a><a href = \"?sort=alpha-rev\">&#8595;</a></th><th>Last Modified <a href=\"?sort=date\">&#8593;</a><a href = \"?sort=date-rev\">&#8595;</a></th></tr>")
              <> LBS.concat xs
              <> fromString ("</table></div><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
 
@@ -219,7 +221,7 @@ uploadForm :: Options -> Policy -> Middleware
 uploadForm opts policy app req k = do
     when (optVerbose opts) $ putStrLn "Rendering upload form"
     k (responseLBS status200 [] html)
-  where html = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">a, a:active {text-decoration: none; color: blue;}a:visited {color: #48468F;}a:hover, a:focus {text-decoration: underline; color: red;}body {background-color: #F5F5F5;}h2 {margin-bottom: 12px;}table {margin-left: 12px;}th, td { font: 90% monospace; text-align: left;}th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}td {padding-right: 14px;}td.s, th.s {text-align: right;}div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}</style></head><body><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
+  where html = fromString ("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\"><html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\"><head><meta charset=\"utf-8\"><title>sws</title><style type=\"text/css\">" ++ styling ++ "</style></head><body><form enctype=\"multipart/form-data\" method=\"post\" action=\"\">File: <input type=\"file\" name=\"file\" required=\"required\" multiple=\"multiple\"><input type=\"submit\" value=\"Upload\"></form><div class=\"foot\">sws" ++ vERSION ++ "</div></body></html>")
 
 -- Option handling
 
@@ -441,7 +443,7 @@ serve opts dir = do
                 $ enableIf (optAuthentication opts)
                     (basicAuth (\u p -> return $ optUserName opts == u && pw == p)
                                (fromString $ optRealm opts))
-                $ enableIf (optCompress opts) (gzip def { gzipFiles = GzipCompress })
+                $ enableIf (optCompress opts) (gzip defaultGzipSettings { gzipFiles = GzipCompress })
                 $ enableIf (not (null headers)) (addHeaders headers . stripHeadersIf (map fst headers) (const True))
                 $ enableIf (optAllowUploads opts || optUploadOnly opts) (update opts policy (overwritePolicy (optOverwriteOption opts)))
                 $ (if optUploadOnly opts then uploadForm opts policy else staticPolicyWithOptions staticOpts policy)
